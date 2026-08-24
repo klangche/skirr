@@ -18,6 +18,8 @@ pub struct RawDeviceInfo {
     pub friendly_name: Option<String>,
     pub class_name: Option<String>,
     pub status: Option<String>,
+    /// PnP parent device instance ID (`DEVPKEY_Device_Parent`), when known.
+    pub parent: Option<String>,
 }
 
 impl RawDeviceInfo {
@@ -50,6 +52,8 @@ struct PsDevice {
     class: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    parent: Option<String>,
 }
 
 impl From<PsDevice> for RawDeviceInfo {
@@ -62,6 +66,7 @@ impl From<PsDevice> for RawDeviceInfo {
             friendly_name: p.friendly_name,
             class_name: p.class,
             status: p.status,
+            parent: p.parent,
         }
     }
 }
@@ -93,9 +98,12 @@ pub fn parse_powershell_json(text: &str) -> Result<Vec<RawDeviceInfo>, String> {
 }
 
 /// Inline PowerShell query kept next to its parser so they stay in sync.
+/// Emits one JSON record per present USB device, including its PnP parent
+/// (Shoko's `_win_parent_map` technique, single spawn).
 pub const POWERSHELL_QUERY: &str = "Get-PnpDevice -PresentOnly | \
 Where-Object { $_.InstanceId -like 'USB*' } | \
-Select-Object InstanceId,FriendlyName,Manufacturer,Class,Status | ConvertTo-Json -Compress";
+ForEach-Object { $p = $null; try { $p = ($_ | Get-PnpDeviceProperty -KeyName 'DEVPKEY_Device_Parent' -ErrorAction Stop).Data } catch {}; \
+[PSCustomObject]@{ InstanceId = $_.InstanceId; Parent = $p; FriendlyName = $_.FriendlyName; Manufacturer = $_.Manufacturer; Class = $_.Class; Status = $_.Status } } | ConvertTo-Json -Compress";
 
 /// Split a REG_MULTI_SZ buffer into strings (stops at empty terminator).
 pub fn split_multi_sz(buf: &[u16]) -> Vec<String> {
@@ -116,6 +124,21 @@ pub fn decode_utf16(buf: &[u16]) -> Option<String> {
     }
 }
 
+/// Decode a NUL-terminated UTF-16 string from a little-endian byte buffer
+/// (as returned by `SetupDiGetDevicePropertyW` for `DEVPROP_TYPE_STRING`).
+pub fn decode_utf16_bytes(buf: &[u8]) -> Option<String> {
+    let units: Vec<u16> = buf
+        .chunks_exact(2)
+        .take_while(|c| !(c[0] == 0 && c[1] == 0))
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    if units.is_empty() {
+        None
+    } else {
+        Some(String::from_utf16_lossy(&units))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Native collectors (Windows only)
 // ---------------------------------------------------------------------------
@@ -126,6 +149,7 @@ mod win {
     use skirr_core::BackendError;
     use std::os::windows::process::CommandExt;
     use windows::Win32::Devices::DeviceAndDriverInstallation::*;
+    use windows::Win32::Devices::Properties::{DEVPKEY_Device_Parent, DEVPROPTYPE};
     use windows::Win32::Foundation::*;
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -170,6 +194,8 @@ mod win {
                     };
 
                 let str_prop = |prop| read_string_property(hset, &data, prop);
+                let parent =
+                    unsafe { read_device_property_string(hset, &data, &DEVPKEY_Device_Parent) };
                 let mut hw_buf = [0u16; 2048];
                 let hardware_ids = SetupDiGetDeviceRegistryPropertyW(
                     hset,
@@ -190,6 +216,7 @@ mod win {
                     friendly_name: str_prop(SPDRP_FRIENDLYNAME),
                     class_name: str_prop(SPDRP_CLASS),
                     status: Some("Present".to_string()),
+                    parent,
                 });
             }
 
@@ -209,6 +236,21 @@ mod win {
             SetupDiGetDeviceRegistryPropertyW(hset, data, prop, None, Some(&mut buf), None).ok()?;
         }
         decode_utf16(&buf)
+    }
+
+    /// Read a `DEVPROP_TYPE_STRING` device property (e.g. parent key).
+    unsafe fn read_device_property_string(
+        hset: HDEVINFO,
+        data: &SP_DEVINFO_DATA,
+        key: &windows::Win32::Devices::Properties::DEVPROPKEY,
+    ) -> Option<String> {
+        let mut ptype: DEVPROPTYPE = 0;
+        let mut buf = [0u8; 1024];
+        unsafe {
+            SetupDiGetDevicePropertyW(hset, data, key, Some(&mut ptype), Some(&mut buf), None, 0)
+                .ok()?;
+        }
+        super::decode_utf16_bytes(&buf)
     }
 
     fn powershell_enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {

@@ -32,24 +32,39 @@ impl UsbBackend for SkirrWindowsBackend {
     }
 
     fn get_topology(&self) -> BackendResult<SystemTopology> {
-        Err(BackendError::unsupported(
-            self.name(),
-            "topology construction lands in Phase 2.2",
-        ))
+        #[cfg(windows)]
+        {
+            let raw = crate::native::win::enumerate()?;
+            let info = platform_info_impl()?;
+            Ok(crate::topology::build(&raw, info, chrono::Utc::now()))
+        }
+        #[cfg(not(windows))]
+        {
+            Err(BackendError::unsupported(
+                self.name(),
+                "topology requires Windows",
+            ))
+        }
     }
 
-    fn get_speeds(&self, _device_id: Uuid) -> BackendResult<SpeedReport> {
-        Err(BackendError::unsupported(
-            self.name(),
-            "speed detection lands in Phase 2.3",
-        ))
+    fn get_speeds(&self, device_id: Uuid) -> BackendResult<SpeedReport> {
+        #[cfg(windows)]
+        {
+            speeds_for_device(self.name(), device_id)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = device_id;
+            Err(BackendError::unsupported(
+                self.name(),
+                "speed detection requires Windows",
+            ))
+        }
     }
 
     fn monitor(&self) -> BackendResult<Box<dyn skirr_core::HotplugBackend + '_>> {
-        Err(BackendError::unsupported(
-            self.name(),
-            "hotplug monitoring lands in Phase 2.4",
-        ))
+        // Box<dyn HotplugBackend> ('static) coerces to the shorter lifetime.
+        crate::hotplug::create_monitor()
     }
 }
 
@@ -61,6 +76,84 @@ fn is_admin_now() -> bool {
 #[cfg(not(windows))]
 fn is_admin_now() -> bool {
     false
+}
+
+/// Resolve one device's speeds: build the topology to locate it, walk the hub
+/// interfaces for its parent hub's port snapshot, then map negotiated vs
+/// advertised capability onto the core `SpeedReport`.
+#[cfg(windows)]
+fn speeds_for_device(backend: &'static str, device_id: Uuid) -> BackendResult<SpeedReport> {
+    use crate::speeds::collect_hub_walk;
+
+    let topo = crate::backend::SkirrWindowsBackend
+        .get_topology()
+        .map_err(|e| BackendError::os_api(backend, format!("topology for speed query: {e}")))?;
+
+    let device = topo
+        .devices
+        .iter()
+        .find(|d| d.id == device_id)
+        .ok_or_else(|| BackendError::os_api(backend, format!("device {device_id} not present")))?;
+
+    // The hub a port lives on is the PnP parent (root hubs or external hubs).
+    let parent_instance = match device.parent_id {
+        Some(pid) => topo
+            .devices
+            .iter()
+            .find(|d| d.id == pid)
+            .map(|d| d.platform_id.clone()),
+        None => None,
+    }
+    // Root-hub devices are themselves the queried hub.
+    .unwrap_or_else(|| device.platform_id.clone());
+
+    let walk = collect_hub_walk()?;
+    let is_root_target = device.parent_id.is_none();
+
+    let snap = walk.ports.iter().find(|p| {
+        if !p.hub_instance.eq_ignore_ascii_case(&parent_instance) {
+            return false;
+        }
+        if p.vendor_id != device.vendor_id || p.product_id != device.product_id {
+            return false;
+        }
+        // External devices must land on the recorded port; root-hub targets
+        // have no meaningful downstream port of their own.
+        if is_root_target {
+            true
+        } else {
+            device.port_number.is_some_and(|n| n == p.port)
+        }
+    });
+
+    match snap {
+        Some(snap) => {
+            let max = snap.max_supported();
+            let current = snap.current_link();
+            let bottleneck = (max > current && current != UsbSpeed::Unknown).then(|| {
+                skirr_core::SpeedBottleneck {
+                    device_id,
+                    max_speed: max,
+                    current_speed: current,
+                    severity: skirr_core::BottleneckSeverity::from_speeds(max, current),
+                }
+            });
+            Ok(SpeedReport {
+                device_id,
+                max_supported: max,
+                current_link: current,
+                bottleneck,
+            })
+        }
+        None if walk.denied_hubs > 0 => Err(BackendError::permission_denied(
+            backend,
+            "hub handle denied unelevated; rerun as admin",
+        )),
+        None => Err(BackendError::os_api(
+            backend,
+            format!("no hub-port data matched device {device_id}"),
+        )),
+    }
 }
 
 fn platform_info_impl() -> BackendResult<PlatformInfo> {
@@ -173,6 +266,7 @@ mod tests {
             friendly_name: None,
             class_name: Some("USB".to_string()),
             status: Some("OK".to_string()),
+            parent: None,
         }
     }
 

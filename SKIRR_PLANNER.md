@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 17%** *(phase-weighted: Phases 0–1 complete)*
+**Overall Progress: 25%** *(phase-weighted: Phases 0–2 complete; Windows backend code complete, native paths 🟡)*
 
 ---
 
@@ -125,6 +125,8 @@ CI must build all four artifacts on every release tag.
 
 ## Phase 2: MVP - Windows Backend (skirr-windows)
 
+**Status: [x] Completed (code complete; 🟡 all native paths pending Windows-runner review)**
+
 ### 2.1 PnP/SetupAPI Enumeration
 - [x] Enumerate all USB devices via SetupAPI 🟡
 - [x] Extract VID, PID, manufacturer, product, serial
@@ -134,23 +136,28 @@ CI must build all four artifacts on every release tag.
 - **Notes**: `skirr-windows` restructured: `hwid.rs` (cross-platform parsers: VID/PID/MI, instance-path heuristics ported from Shoko `_parse_devpath`, class-name mapping), `native.rs` (`RawDeviceInfo`; `#[cfg(windows)]` SetupAPI collector via GUID_DEVCLASS_USB + registry properties + hardware-ID MULTI_SZ; PowerShell fallback = Shoko-proven query; JSON parsing testable everywhere), `backend.rs` (`SkirrWindowsBackend` implements core `UsbBackend`; 2.2–2.4 methods return Unsupported). 15 unit tests green off-Windows. **🟡 Needs review**: native path compiles by inspection only — CI is PAUSED; verify on a Windows runner before release tag (windows-rs 0.59 signature drift possible in `SetupDiGetClassDevsW`/`SetupDiGetDeviceRegistryPropertyW` calls).
 
 ### 2.2 Topology Construction
-- [ ] Build parent/child relationships via PnP device tree
-- [ ] Identify host controllers and root hubs
-- [ ] Map hub ports to children
-- [ ] Calculate depth, hops, tiers per device
-- **Progress: 0%**
+- [x] Build parent/child relationships via PnP device tree
+- [x] Identify host controllers and root hubs
+- [x] Map hub ports to children
+- [x] Calculate depth, hops, tiers per device
+- **Progress: 100%** *(pending real-Windows verification)*
+- **Notes**: Parent lookup folded into the single enumeration pass: native `SetupDiGetDevicePropertyW(&DEVPKEY_Device_Parent)` (feature `Win32_Devices_Properties`) with PowerShell fallback extended to emit `Parent` per record (single spawn, Shoko `_win_parent_map` technique). New `topology.rs`: pure graph builder (`build(raw) -> SystemTopology`) testable off-Windows — links parents/children by instance ID, detects ROOT_HUB instances → RootHub records grouped under HostController records keyed by their PnP parent (PCI\...), extracts port numbers from generated/hub-shape instance paths, computes hops/tiers/depth and root-hub/controller attribution per device. 3 topology unit tests; 18 total in crate, green on macOS. **🟡 Same runner-review caveat as 2.1** (native property-read signature drift possible).
 
 ### 2.3 USB Speed Detection
-- [ ] Implement IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX
-- [ ] Implement IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2
-- [ ] Handle admin vs non-admin speed data
-- [ ] Detect current link speed vs capability
+- [x] Implement IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX
+- [x] Implement IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2
+- [x] Handle admin vs non-admin speed data
+- [x] Detect current link speed vs capability
+- **Progress: 100%** *(pending real-Windows verification)*
+- **Notes**: New `speeds.rs` — cross-platform pure layer (IOCTL constants verified against published values 0x220408/0x220440/0x220448; flattened `repr(C)` mirrors of `USB_NODE_CONNECTION_INFORMATION_EX` head (44 bytes) and `_EX_V2`; `map_ex_speed`, `derive_max_speed(bcdUSB+protocols+caps)` with conservative SS+ floor at 10G; hub-path↔PnP-instance reconstruction) + `#[cfg(windows)]` collector walking `GUID_DEVINTERFACE_USB_HUB` → `CreateFileW` → per-port `_EX`/`_EX_V2`. Backend `get_speeds(id)` resolves device via topology snapshot, matches parent-hub instance + port + VID/PID, returns `SpeedReport` incl. `SpeedBottleneck`; unelevated access-denied hubs surface as `BackendError::PermissionDenied` (admin-vs-non-admin rule). New windows features: `Win32_Devices_Usb`, `Win32_Storage_FileSystem`, `Win32_Security`. 9 new unit tests (27 total in crate), green on macOS. **🟡 Needs review**: native path compiles by inspection only — CI paused; verify on Windows runner before release tag (windows-rs 0.59 `CreateFileW`/`DeviceIoControl`/interface-detail-buffer signature drift possible; note `SP_DEVICE_INTERFACE_DETAIL_DATA_W.cbSize` x64 packing gotcha). Shoko had no speed implementation to port (grep confirmed); technique built from DATA_MAP §4 spec.
 - **Progress: 0%**
 
 ### 2.4 Hotplug Monitoring
-- [ ] Register for WM_DEVICECHANGE notifications
-- [ ] Track device arrival/removal/re-enumeration
-- [ ] Emit normalized events
+- [x] Register for WM_DEVICECHANGE notifications *(superseded: polling-diff route chosen — headless-friendly, Shoko-proven, no message pump; WM_DEVICECHANGE can revisit later if sub-second latency ever matters)*
+- [x] Track device arrival/removal/re-enumeration
+- [x] Emit normalized events
+- **Progress: 100%** *(pending real-Windows verification)*
+- **Notes**: New `hotplug.rs` — pure diff engine (`diff_snapshots(prev, cur) -> Vec<DiagnosticEvent>`): instance-set diff; identical silicon (VID/PID + case-insensitive serial) reappearing under a new instance/port pairs into `DeviceReEnumerated` instead of remove+add; hubs emit `HubConnected`/`HubDisconnected`; `Fingerprint::from_raw` derives identity from existing hwid parsers + `topology::extract_port`. Windows side: headless `PollMonitor` (250 ms re-enumeration loop, transient-error tolerant, channel contract from Phase 1.2 via `poll_event(timeout)`), `monitor()` now returns the real implementation (`NotMonitoring` error when unarmed). 7 new unit tests off-Windows (34 total in crate). **🟡 Needs review**: native enumeration path already carries the 2.1 caveat; monitor adds nothing new beyond it.
 - **Progress: 0%**
 
 ---
@@ -430,7 +437,7 @@ CI must build all four artifacts on every release tag.
 |-------|------|----------|--------|
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
-| 2 | Windows Backend | 25% | [~] In progress (2.1 done, 🟡 runner review pending) |
+| 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
 | 3 | macOS Backend | 0% | [ ] Not started |
 | 4 | CLI | 0% | [ ] Not started |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
@@ -441,7 +448,7 @@ CI must build all four artifacts on every release tag.
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 17%** *(phase-weighted: Phases 0–1 complete; MVP core done)*
+**Total Project Progress: 25%** *(phase-weighted: Phases 0–2 complete; MVP Windows backend done, macOS next)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -476,14 +483,14 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 2.2 - Topology Construction (skirr-windows)
-**Action**: Build parent/child relationships on Windows behind `#[cfg(windows)]`:
-- Query `DEVPKEY_Device_Parent` per device (`SetupDiGetDevicePropertyW`, feature `Win32_Devices_Properties`) — bulk PowerShell variant already proven in Shoko as fallback
-- Identify host controllers (`GUID_DEVCLASS_USB` roots / enumerator `PCI`) and root hubs
-- Map hub ports: parse instance path port segment via existing `hwid::parse_instance_path`
-- Compute depth/hops/tiers per device and fill `SystemTopology` (host_controllers, root_hubs, devices with parent_id/children_ids/port_number)
-- Reuse core `rule_engine::compute_chain_metrics`-style semantics; keep non-Windows builds green (Unsupported elsewhere)
-**Verify locally**: cargo test/check/clippy on macOS must pass; real verification deferred to Windows runner (see CI Status)
-**Reference**: DATA_MAP.md §2 Windows column; Shoko usb_topology.py `_win_parent_map`
+**Current**: Phase 3.1 - IOKit/IORegistry Enumeration (skirr-macos)
+**Action**: Implement macOS enumeration behind `#[cfg(target_os = "macos")]`:
+- IOKit route: `IOServiceGetMatchingServices(kIOUSBDeviceClassName)` / `kIOMasterPortDefault`, read properties from IORegistry: `idVendor`, `idProduct`, `USB Product Name`, `USB Vendor Name`, `USB Serial Number`, `bDeviceClass/bDeviceSubClass/bDeviceProtocol`, `bcdUSB`, locationID
+- Prefer `objc2`/`core-foundation` crates already in workspace deps; if bindings too thin, fall back to spawning `system_profiler SPUSBDataType -json` (Shoko-proven) and parse JSON into the same raw records — keep BOTH: IOKit primary, system_profiler fallback (DATA_MAP §11 chain), same shape as Windows native/fallback split in skirr-windows/src/native.rs
+- Define `RawDeviceInfo`-equivalent struct local to skirr-macos; reuse core normalization (`build_usb_device` pattern from skirr-windows/src/backend.rs)
+- Implement `platform_info()` for macOS (sw_vers/sysctl via commands or objc2 NSProcessInfo; is_admin = geteuid()==0)
+- Keep non-macOS builds green (Unsupported elsewhere); parsing layers pure + unit-tested off-Windows AND off-macOS where possible
+**Verify locally**: cargo test/check/clippy on macOS must pass — NOTE dev host IS macOS, so IOKit path can be compile-checked AND run-tested here (no 🟡 needed for this phase's core work!)
+**Reference**: DATA_MAP.md §3 macOS column, §11 fallback chain; Shoko usb_topology.py `_macos_*` functions
 ---
-*Last updated: 2026-08-24 | Phase 2.1 done (🟡 native path needs Windows-runner review); next agent: Phase 2.2*
+*Last updated: 2026-08-24 | Phase 2 COMPLETE (all native paths 🟡 pending Windows-runner review); next agent: Phase 3.1*
