@@ -1,14 +1,15 @@
-//! Skirr macOS backend - IOKit/IORegistry enumeration, speed detection, hotplug monitoring.
+//! Skirr macOS backend - IOKit/IORegistry enumeration, topology, speeds, hotplug monitoring.
 //!
-//! Phase status: 3.1 enumeration + 3.2 topology implemented (IOKit primary,
-//! system_profiler fallback). Speeds (3.3) and hotplug (3.4) still return
-//! `BackendError::Unsupported`.
+//! Phase status: 3.1-3.4 complete — enumeration, topology, speeds and
+//! hotplug monitoring all implemented.
 //!
 //! All IOKit usage lives behind `#[cfg(target_os = "macos")]`; the parsing and
 //! normalization layers compile everywhere so tests run on any host.
 
 mod backend;
+mod hotplug;
 mod native;
+mod speeds;
 mod topology;
 
 /// Version marker for the macOS backend.

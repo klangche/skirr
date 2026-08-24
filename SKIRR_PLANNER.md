@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 25%** *(phase-weighted: Phases 0–2 complete; Windows backend code complete, native paths 🟡)*
+**Overall Progress: 33%** *(phase-weighted: Phases 0–3 complete; both MVP backends done, CLI next)*
 
 ---
 
@@ -164,6 +164,8 @@ CI must build all four artifacts on every release tag.
 
 ## Phase 3: MVP - macOS Backend (skirr-macos)
 
+**Status: [x] Completed (live-tested on macOS dev host; device-bearing verification pending physical hardware)**
+
 ### 3.1 IOKit/IORegistry Enumeration
 - [x] Enumerate USB devices via IOKit
 - [x] Extract VID, PID, manufacturer, product, serial
@@ -185,16 +187,19 @@ CI must build all four artifacts on every release tag.
 - **Progress: 0%**
 
 ### 3.3 USB Speed Detection
-- [ ] Get max supported speed from device properties
-- [ ] Get current negotiated link speed
-- [ ] Detect bottlenecks (USB 3 device on USB 2 port)
-- **Progress: 0%**
+- [x] Get max supported speed from device properties
+- [x] Get current negotiated link speed
+- [x] Detect bottlenecks (USB 3 device on USB 2 port)
+- **Progress: 100%** *(live data pending device-attached check)*
+- **Notes**: New `speeds.rs` pure layer: `map_speed_code` maps IOKit `USBDeviceSpeed` (None0…SuperPlusBy2=6, aligns ~1:1 with core enum incl. SuperPlusBy2→SuperSpeedPlus20); `parse_advertised_mbps` handles system_profiler "Up to N Mb/s|Gb/s" spellings; `mbps_to_speed` bands Mb/s→tiers. Signals plumbed through both collectors in the EXISTING enumeration pass (`RawDeviceInfo.speed_code` from IORegistry `Speed` property; `advertised_mbps` from SPUSBDataType `"speed"` string — advertised-only per DATA_MAP §4 warning). Backend `speeds_for_device`: locate device via topology → fresh single-sweep enumerate → negotiated link; when no negotiated value exists the advertised ceiling doubles as best-known estimate (documented limitation); bottleneck assembled inline like Windows flow. 22 tests green on macOS dev host. ⚠️ Same live caveat as 3.1/3.2: no physical devices attached during verification.
 
 ### 3.4 Hotplug Monitoring
-- [ ] IONotificationPortCreate for USB notifications
-- [ ] Track device arrival/removal/re-enumeration
-- [ ] Emit normalized events
-- **Progress: 0%**
+- [x] IONotificationPortCreate for USB notifications *(superseded: polling-diff route — runloop-free, headless-friendly; IOServiceAddMatchingNotification push events noted as future enhancement requiring CFRunLoop ownership)*
+- [x] Track device arrival/removal/re-enumeration
+- [x] Emit normalized events
+- **Progress: 100%** *(live plug/unplug pending physical device)*
+- **Notes**: New `hotplug.rs` porting the Windows polling-diff design: pure `diff_snapshots` + `Fingerprint` (identity fields read directly from numeric RawDeviceInfo — no string parsing). macOS identity nuance handled explicitly: instances are deterministic from VID/PID+location, so same-port re-enumeration is invisible by construction; serial-matched moves across locations pair into `DeviceReEnumerated`, serialless devices falling back to location identity (a move = remove+add). Event `port_number` derived via topology's `port_from_location` with parent context. Hub class → dedicated event kinds. `PollMonitor` (250 ms loop, transient-error tolerant) implements core `HotplugBackend`; `monitor()` wired; `NotMonitoring` when unarmed. 6 new tests (28 total in crate), workspace green. ⚠️ Live plug/unplug verification still needs a physical device (folds into 🟡 review sweep).
+- **Deps added**: none beyond 3.1
 
 ---
 
@@ -443,7 +448,7 @@ CI must build all four artifacts on every release tag.
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
 | 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
-| 3 | macOS Backend | 50% | [~] In progress (3.1–3.2 done, live-tested on dev host) |
+| 3 | macOS Backend | 100% | [x] Completed (dev-host live-tested; hardware sweep pending) |
 | 4 | CLI | 0% | [ ] Not started |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
 | 6 | Linux Backend | 0% | [ ] Not started |
@@ -453,7 +458,7 @@ CI must build all four artifacts on every release tag.
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 25%** *(phase-weighted: Phases 0–2 complete; MVP Windows backend done, macOS next)*
+**Total Project Progress: 33%** *(phase-weighted: Phases 0–3 complete; MVP enumeration/topology/speeds/hotplug on Windows + macOS done, CLI next)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -488,14 +493,20 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 3.3 - USB Speed Detection (skirr-macos)
-**Action**: Implement per-device speed reporting behind `#[cfg(target_os = "macos")]`:
-- IORegistry route: devices expose negotiated speed via the `Speed` property (IOUSBHostDevice: kUSBDeviceSpeedLow/Full/High/Super/SuperPlus coded as integers 0-4) and sometimes `kUSBSerialNumberString`-adjacent `Device Speed` keys; read in the SAME IOKit pass from 3.1 (extend `collect_entry`) — do NOT re-enumerate
-- system_profiler fallback: `"speed"` string field ("Up to 480 Mb/s" etc.) — ⚠️ that is ADVERTISED max, not negotiated; parse into max_supported only (DATA_MAP §4 warning)
-- Map Mbps values (1.5/12/480/5000/10000/20000) → core UsbSpeed enum; write pure mapping fn + tests off-macOS
-- Wire `get_speeds(device_id)` in backend.rs: build topology snapshot, locate device by id, return SpeedReport with max_supported vs current_link + bottleneck (mirror skirr-windows speeds_for_device flow)
-- Keep non-macOS builds green (Unsupported elsewhere)
-**Verify locally**: cargo test/clippy on macOS must pass; live speed data requires a device attached — note availability in handoff
-**Reference**: DATA_MAP.md §4 speeds column (macOS row), §12 limits; skirr-windows/src/speeds.rs for report-flow template
+**Current**: Phase 4.1 - Command Structure (skirr-cli)
+**Action**: Build the CLI surface wiring backends into commands (clap derive already a workspace dep):
+- `skirr scan` — full enumeration output (all USB devices, table)
+- `skirr usb` — USB devices only (subset of scan; keep both per plan)
+- `skirr topology` — tree view with hops/tiers (ASCII tree from SystemTopology: controllers → root hubs → devices, indent by tier)
+- `skirr hubs` — hub details with port mapping
+- `skirr ports` — port-level details
+- `skirr diagnose` — run rule engine (`RuleEngine::evaluate`) + `format_report`, show verdict
+- `skirr monitor` — live hotplug monitoring (poll_event loop, print events; Ctrl-C to exit)
+- `skirr report` — generate JSON/HTML report (JSON via serde; HTML can be minimal placeholder until Phase 5)
+- Backend selection: platform-gated — macOS host uses skirr-macos::create_backend(), Windows uses skirr-windows::create_backend(), else error cleanly. Feature-gate the backend crates so cross-compiling the CLI doesn't drag every backend in
+- Global flags worth adding now: `--json` for machine-readable output on scan/usb/topology/diagnose
+- Keep all commands compiling/behaving sanely off any supported OS (clean Unsupported errors)
+**Verify locally**: cargo test/clippy on macOS must pass — CLI is fully run-testable here end-to-end (scan/topology/diagnose against live IOKit data even if empty)
+**Reference**: skirr-core/src/rule_engine.rs format_report; backend trait surface; Shoko main_cli.py command naming
 ---
-*Last updated: 2026-08-24 | Phase 3.2 done (pure builder fully tested; hardware caveat noted); next agent: Phase 3.3*
+*Last updated: 2026-08-24 | Phase 3 COMPLETE (both MVP backends done); next agent: Phase 4.1*

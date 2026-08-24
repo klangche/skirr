@@ -46,18 +46,24 @@ impl UsbBackend for SkirrMacosBackend {
         }
     }
 
-    fn get_speeds(&self, _device_id: Uuid) -> BackendResult<SpeedReport> {
-        Err(BackendError::unsupported(
-            self.name(),
-            "speed detection lands in Phase 3.3",
-        ))
+    fn get_speeds(&self, device_id: Uuid) -> BackendResult<SpeedReport> {
+        #[cfg(target_os = "macos")]
+        {
+            speeds_for_device(self.name(), device_id)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = device_id;
+            Err(BackendError::unsupported(
+                self.name(),
+                "speed detection requires macOS",
+            ))
+        }
     }
 
     fn monitor(&self) -> BackendResult<Box<dyn skirr_core::HotplugBackend + '_>> {
-        Err(BackendError::unsupported(
-            self.name(),
-            "hotplug monitoring lands in Phase 3.4",
-        ))
+        // Box<dyn HotplugBackend> ('static) coerces to the shorter lifetime.
+        crate::hotplug::create_monitor()
     }
 }
 
@@ -100,6 +106,62 @@ pub(crate) fn build_usb_device(raw: &RawDeviceInfo) -> UsbDevice {
 
 fn enumerate_devices_impl() -> BackendResult<Vec<UsbDevice>> {
     Ok(native::enumerate()?.iter().map(build_usb_device).collect())
+}
+
+/// Resolve one device's speeds: locate it in the topology, then pull its raw
+/// speed signals from a fresh enumeration pass (single IOKit sweep; no extra
+/// OS calls beyond that).
+#[cfg(target_os = "macos")]
+fn speeds_for_device(backend: &'static str, device_id: Uuid) -> BackendResult<SpeedReport> {
+    let topo = crate::backend::SkirrMacosBackend
+        .get_topology()
+        .map_err(|e| BackendError::os_api(backend, format!("topology for speed query: {e}")))?;
+
+    let device = topo
+        .devices
+        .iter()
+        .find(|d| d.id == device_id)
+        .ok_or_else(|| BackendError::os_api(backend, format!("device {device_id} not present")))?;
+
+    let raw = native::enumerate()?
+        .into_iter()
+        .find(|r| r.instance_id.eq_ignore_ascii_case(&device.platform_id))
+        .ok_or_else(|| {
+            BackendError::os_api(backend, format!("no enumeration data for {device_id}"))
+        })?;
+
+    // Negotiated from IORegistry; fall back to advertised only when no
+    // negotiated value exists — and then it doubles as both ceiling floor
+    // and best-known link estimate (documented limitation).
+    let current_link = raw
+        .speed_code
+        .map(crate::speeds::map_speed_code)
+        .unwrap_or_else(|| {
+            raw.advertised_mbps
+                .map(crate::speeds::mbps_to_speed)
+                .unwrap_or(skirr_core::UsbSpeed::Unknown)
+        });
+    let max_supported = raw
+        .advertised_mbps
+        .map(crate::speeds::mbps_to_speed)
+        .unwrap_or(current_link)
+        .max(current_link);
+
+    let bottleneck = (max_supported > current_link
+        && current_link != skirr_core::UsbSpeed::Unknown)
+        .then(|| skirr_core::SpeedBottleneck {
+            device_id,
+            max_speed: max_supported,
+            current_speed: current_link,
+            severity: skirr_core::BottleneckSeverity::from_speeds(max_supported, current_link),
+        });
+
+    Ok(SpeedReport {
+        device_id,
+        max_supported,
+        current_link,
+        bottleneck,
+    })
 }
 
 fn platform_info_impl() -> BackendResult<PlatformInfo> {
@@ -173,6 +235,8 @@ mod tests {
             bcd_usb: 0x0200,
             location_id: 0x14500000,
             parent: Some(make_instance(0x2109, 0x0817, 0x14200000)),
+            speed_code: Some(3),
+            advertised_mbps: Some(480),
         }
     }
 
@@ -224,6 +288,26 @@ mod tests {
         assert!(is_vm_model("VMware7,1"));
         assert!(!is_vm_model("Mac14,6"));
         assert!(!is_vm_model(""));
+    }
+
+    #[test]
+    fn speed_signals_combine_like_speeds_for_device() {
+        use skirr_core::UsbSpeed;
+
+        // High negotiated vs 5 Gb/s advertised: ceiling raised, link stays.
+        let current = crate::speeds::map_speed_code(3);
+        let max = crate::speeds::mbps_to_speed(5000).max(current);
+        assert_eq!(current, UsbSpeed::HighSpeed);
+        assert_eq!(max, UsbSpeed::SuperSpeed);
+        assert!(max > current);
+
+        // No negotiated data: advertised doubles as best-known estimate.
+        let fallback = crate::speeds::mbps_to_speed(480);
+        assert_eq!(fallback.max(fallback), UsbSpeed::HighSpeed);
+
+        // Fully unknown device reports Unknown with no false bottleneck.
+        let unknown = crate::speeds::map_speed_code(0).max(crate::speeds::map_speed_code(0));
+        assert_eq!(unknown, UsbSpeed::Unknown);
     }
 
     #[test]

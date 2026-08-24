@@ -32,6 +32,11 @@ pub struct RawDeviceInfo {
     /// Parent's instance ID when the parent is itself a USB device
     /// (hub chain); `None` under a host controller.
     pub parent: Option<String>,
+    /// IORegistry `Speed` property (negotiated; IOKit `USBDeviceSpeed` code).
+    pub speed_code: Option<u32>,
+    /// system_profiler `"speed"` string parsed to Mb/s — ADVERTISED max,
+    /// never negotiated (DATA_MAP §4).
+    pub advertised_mbps: Option<u32>,
 }
 
 /// Stable per-plug identity: VID/PID plus location ID.
@@ -76,6 +81,8 @@ struct SpNode {
     serial_num: Option<String>,
     manufacturer: Option<String>,
     bcd_device: Option<String>,
+    /// "Up to 480 Mb/s" — advertised ceiling, not negotiated.
+    speed: Option<String>,
 }
 
 impl SpNode {
@@ -137,6 +144,11 @@ fn walk_sp_nodes(nodes: &[SpNode], parent: Option<&str>, out: &mut Vec<RawDevice
             bcd_usb: parse_bcd_device(node.bcd_device.as_deref()),
             location_id: location,
             parent: parent.map(str::to_string),
+            speed_code: None,
+            advertised_mbps: node
+                .speed
+                .as_deref()
+                .and_then(crate::speeds::parse_advertised_mbps),
         });
         walk_sp_nodes(&node.items, Some(instance.as_str()), out);
     }
@@ -361,6 +373,10 @@ mod iokit {
                         .unwrap_or(0),
                     location_id,
                     parent: parent_instance,
+                    speed_code: dict
+                        .number::<i64>("Speed")
+                        .and_then(|v| u32::try_from(v).ok()),
+                    advertised_mbps: None,
                 })
             }
             _ => None,
