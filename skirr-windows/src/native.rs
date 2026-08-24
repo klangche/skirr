@@ -1,0 +1,225 @@
+//! Windows device sources: native SetupAPI + PowerShell fallback.
+//!
+//! `RawDeviceInfo`, `parse_powershell_json`, and `split_multi_sz` are compiled
+//! on every platform so parsing logic is unit-testable off-Windows; only the
+//! collectors are `#[cfg(windows)]`. On non-Windows builds those shared items
+//! have no production callers, hence the blanket dead-code allowance.
+#![allow(dead_code)]
+
+use serde::Deserialize;
+
+/// OS-level facts gathered before normalization into `UsbDevice`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RawDeviceInfo {
+    pub instance_id: String,
+    pub hardware_ids: Vec<String>,
+    pub manufacturer: Option<String>,
+    pub description: Option<String>,
+    pub friendly_name: Option<String>,
+    pub class_name: Option<String>,
+    pub status: Option<String>,
+}
+
+impl RawDeviceInfo {
+    /// Best display name: friendly name, else description.
+    pub fn display_name(&self) -> Option<&str> {
+        self.friendly_name
+            .as_deref()
+            .or(self.description.as_deref())
+    }
+
+    /// First hardware ID line (primary).
+    pub fn primary_hwid(&self) -> Option<&str> {
+        self.hardware_ids.first().map(String::as_str)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PowerShell fallback output handling
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct PsDevice {
+    instance_id: String,
+    #[serde(default)]
+    friendly_name: Option<String>,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default)]
+    class: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+impl From<PsDevice> for RawDeviceInfo {
+    fn from(p: PsDevice) -> Self {
+        RawDeviceInfo {
+            instance_id: p.instance_id,
+            hardware_ids: Vec::new(),
+            manufacturer: p.manufacturer,
+            description: None,
+            friendly_name: p.friendly_name,
+            class_name: p.class,
+            status: p.status,
+        }
+    }
+}
+
+/// Parse JSON emitted by
+/// `Get-PnpDevice ... | Select-Object InstanceId,FriendlyName,Manufacturer,Class,Status | ConvertTo-Json`.
+///
+/// PowerShell emits one object for a single result, an array otherwise.
+pub fn parse_powershell_json(text: &str) -> Result<Vec<RawDeviceInfo>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|e| format!("invalid PowerShell JSON: {e}"))?;
+    let items: Vec<serde_json::Value> = match value {
+        serde_json::Value::Array(items) => items,
+        obj @ serde_json::Value::Object(_) => vec![obj],
+        _ => return Err("unexpected JSON shape".to_string()),
+    };
+    items
+        .into_iter()
+        .map(|item| {
+            serde_json::from_value::<PsDevice>(item)
+                .map(RawDeviceInfo::from)
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+/// Inline PowerShell query kept next to its parser so they stay in sync.
+pub const POWERSHELL_QUERY: &str = "Get-PnpDevice -PresentOnly | \
+Where-Object { $_.InstanceId -like 'USB*' } | \
+Select-Object InstanceId,FriendlyName,Manufacturer,Class,Status | ConvertTo-Json -Compress";
+
+/// Split a REG_MULTI_SZ buffer into strings (stops at empty terminator).
+pub fn split_multi_sz(buf: &[u16]) -> Vec<String> {
+    String::from_utf16_lossy(buf)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Decode a NUL-padded UTF-16 buffer.
+pub fn decode_utf16(buf: &[u16]) -> Option<String> {
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    if end == 0 {
+        None
+    } else {
+        Some(String::from_utf16_lossy(&buf[..end]))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Native collectors (Windows only)
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+mod win {
+    use super::{decode_utf16, parse_powershell_json, split_multi_sz, RawDeviceInfo};
+    use skirr_core::BackendError;
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::Devices::DeviceAndDriverInstallation::*;
+    use windows::Win32::Foundation::*;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// Enumerate present USB devices: native SetupAPI first, PowerShell when
+    /// the native API errors or yields nothing (docs/DATA_MAP.md §11 chain).
+    pub(super) fn enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
+        match unsafe { setupapi_enumerate() } {
+            Ok(devices) if !devices.is_empty() => Ok(devices),
+            _ => powershell_enumerate(),
+        }
+    }
+
+    /// True when the current process holds an admin token.
+    pub(super) fn is_elevated() -> bool {
+        unsafe { IsUserAnAdmin().is_ok() }
+    }
+
+    unsafe fn setupapi_enumerate() -> windows::core::Result<Vec<RawDeviceInfo>> {
+        let mut devices = Vec::new();
+
+        unsafe {
+            let hset = SetupDiGetClassDevsW(
+                Some(&GUID_DEVCLASS_USB),
+                None,
+                None,
+                DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+            )?;
+
+            for index in 0..u32::MAX {
+                let mut data = SP_DEVINFO_DATA::default();
+                data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+                if SetupDiEnumDeviceInfo(hset, index, &mut data).is_err() {
+                    break; // ERROR_NO_MORE_ITEMS
+                }
+
+                let mut id_buf = [0u16; 512];
+                let instance_id =
+                    match SetupDiGetDeviceInstanceIdW(hset, &data, Some(&mut id_buf), None) {
+                        Ok(_) => decode_utf16(&id_buf).unwrap_or_default(),
+                        Err(_) => String::new(),
+                    };
+
+                let str_prop = |prop| read_string_property(hset, &data, prop);
+                let mut hw_buf = [0u16; 2048];
+                let hardware_ids = SetupDiGetDeviceRegistryPropertyW(
+                    hset,
+                    &data,
+                    SPDRP_HARDWAREID,
+                    None,
+                    Some(&mut hw_buf),
+                    None,
+                )
+                .map(|_| split_multi_sz(&hw_buf))
+                .unwrap_or_default();
+
+                devices.push(RawDeviceInfo {
+                    instance_id,
+                    hardware_ids,
+                    manufacturer: str_prop(SPDRP_MANUFACTURER),
+                    description: str_prop(SPDRP_DEVICEDESC),
+                    friendly_name: str_prop(SPDRP_FRIENDLYNAME),
+                    class_name: str_prop(SPDRP_CLASS),
+                    status: Some("Present".to_string()),
+                });
+            }
+
+            let _ = SetupDiDestroyDeviceInfoList(hset);
+        }
+
+        Ok(devices)
+    }
+
+    unsafe fn read_string_property(
+        hset: HDEVINFO,
+        data: &SP_DEVINFO_DATA,
+        prop: SETUP_DI_REGISTRY_PROPERTY,
+    ) -> Option<String> {
+        let mut buf = [0u16; 1024];
+        unsafe {
+            SetupDiGetDeviceRegistryPropertyW(hset, data, prop, None, Some(&mut buf), None).ok()?;
+        }
+        decode_utf16(&buf)
+    }
+
+    fn powershell_enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
+        let output = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", super::POWERSHELL_QUERY])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| BackendError::os_api("skirr-windows", format!("spawn powershell: {e}")))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_powershell_json(&stdout)
+            .map_err(|e| BackendError::os_api("skirr-windows", format!("powershell parse: {e}")))
+    }
+}

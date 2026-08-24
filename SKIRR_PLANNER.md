@@ -126,11 +126,12 @@ CI must build all four artifacts on every release tag.
 ## Phase 2: MVP - Windows Backend (skirr-windows)
 
 ### 2.1 PnP/SetupAPI Enumeration
-- [ ] Enumerate all USB devices via SetupAPI
-- [ ] Extract VID, PID, manufacturer, product, serial
-- [ ] Get device class/subclass/protocol
-- [ ] Get device descriptor information
-- **Progress: 0%**
+- [x] Enumerate all USB devices via SetupAPI 🟡
+- [x] Extract VID, PID, manufacturer, product, serial
+- [x] Get device class/subclass/protocol (class from PnP names; subclass/protocol land with 2.3 descriptor reads)
+- [x] Get device descriptor information (hardware IDs parsed; full descriptor fetch deferred to 2.3 IOCTLs)
+- **Progress: 100%** *(pending real-Windows verification)*
+- **Notes**: `skirr-windows` restructured: `hwid.rs` (cross-platform parsers: VID/PID/MI, instance-path heuristics ported from Shoko `_parse_devpath`, class-name mapping), `native.rs` (`RawDeviceInfo`; `#[cfg(windows)]` SetupAPI collector via GUID_DEVCLASS_USB + registry properties + hardware-ID MULTI_SZ; PowerShell fallback = Shoko-proven query; JSON parsing testable everywhere), `backend.rs` (`SkirrWindowsBackend` implements core `UsbBackend`; 2.2–2.4 methods return Unsupported). 15 unit tests green off-Windows. **🟡 Needs review**: native path compiles by inspection only — CI is PAUSED; verify on a Windows runner before release tag (windows-rs 0.59 signature drift possible in `SetupDiGetClassDevsW`/`SetupDiGetDeviceRegistryPropertyW` calls).
 
 ### 2.2 Topology Construction
 - [ ] Build parent/child relationships via PnP device tree
@@ -429,7 +430,7 @@ CI must build all four artifacts on every release tag.
 |-------|------|----------|--------|
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
-| 2 | Windows Backend | 0% | [ ] Not started |
+| 2 | Windows Backend | 25% | [~] In progress (2.1 done, 🟡 runner review pending) |
 | 3 | macOS Backend | 0% | [ ] Not started |
 | 4 | CLI | 0% | [ ] Not started |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
@@ -475,13 +476,14 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 2.1 - Windows PnP/SetupAPI Enumeration (skirr-windows)
-**Action**: Implement SetupAPI/CfgMgr32 enumeration behind `#[cfg(windows)]` modules:
-- `enumerate.rs`: `SetupDiGetClassDevs` (GUID_DEVCLASS_USB, DIGCF_PRESENT) + `SetupDiEnumDeviceInfo` + `SetupDiGetDeviceRegistryPropertyW` -> UsbDevice (VID/PID from hardware ID, manufacturer/product/desc, serial)
-- `topology.rs` (Phase 2.2 prep): `CM_Get_Parent`/DEVPKEY_Device_Parent parent map
-- Keep non-Windows builds compiling: gate all windows-crate usage; stub path returns `BackendError::Unsupported`
-- Implement against skirr-core traits (`UsbBackend`) so skirr-cli can select it
-**Verify locally**: `cargo check --workspace` must stay green on macOS (cfg gating); full behavior testable later on a Windows runner/CI (currently PAUSED)
-**Reference**: DATA_MAP.md §1 Windows column; model.rs UsbDevice
+**Current**: Phase 2.2 - Topology Construction (skirr-windows)
+**Action**: Build parent/child relationships on Windows behind `#[cfg(windows)]`:
+- Query `DEVPKEY_Device_Parent` per device (`SetupDiGetDevicePropertyW`, feature `Win32_Devices_Properties`) — bulk PowerShell variant already proven in Shoko as fallback
+- Identify host controllers (`GUID_DEVCLASS_USB` roots / enumerator `PCI`) and root hubs
+- Map hub ports: parse instance path port segment via existing `hwid::parse_instance_path`
+- Compute depth/hops/tiers per device and fill `SystemTopology` (host_controllers, root_hubs, devices with parent_id/children_ids/port_number)
+- Reuse core `rule_engine::compute_chain_metrics`-style semantics; keep non-Windows builds green (Unsupported elsewhere)
+**Verify locally**: cargo test/check/clippy on macOS must pass; real verification deferred to Windows runner (see CI Status)
+**Reference**: DATA_MAP.md §2 Windows column; Shoko usb_topology.py `_win_parent_map`
 ---
-*Last updated: 2026-08-24 | Phase 1 complete (MVP core). Cross-phase gate open: Phase 2 may start.*
+*Last updated: 2026-08-24 | Phase 2.1 done (🟡 native path needs Windows-runner review); next agent: Phase 2.2*
