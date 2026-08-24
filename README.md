@@ -1,2 +1,2 @@
 # skirr
-Skirr – from Old Norse skírr, "clear, bright, pure." This USB tool brings clarity to your workflow. Swift and sharp, Skirr cuts through digital fog. Boot, transfer, recover – it operates with luminous precision. No clutter, no confusion. Just clean, reliable performance. Clarity for your mind in the USB Chaos.
+Skírr – Old Norse for clear, bright, pure. A USB diagnostic tool for ProAV systems. It maps the full device tree, hubs, ports, speeds and displays, then shows exactly why a connection fails, no guessing. Just a clear verdict and the facts behind it.
