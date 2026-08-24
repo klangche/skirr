@@ -236,6 +236,10 @@ pub struct UsbDevice {
     pub max_supported_speed: UsbSpeed,
     pub current_link_speed: UsbSpeed,
     pub is_hub: bool,
+    /// Device is integrated into the host (internal hubs/cameras/BT radios).
+    /// External-hub counting and tier rules exclude these.
+    #[serde(default)]
+    pub is_internal: bool,
     pub hub_info: Option<HubInfo>,
     pub parent_id: Option<Uuid>,
     pub children_ids: Vec<Uuid>,
@@ -275,6 +279,7 @@ impl UsbDevice {
             max_supported_speed: UsbSpeed::Unknown,
             current_link_speed: UsbSpeed::Unknown,
             is_hub: false,
+            is_internal: false,
             hub_info: None,
             parent_id: None,
             children_ids: Vec::new(),
@@ -731,7 +736,7 @@ pub struct HostController {
     pub capabilities: HostControllerCapabilities,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HostControllerCapabilities {
     pub supports_usb2: bool,
     pub supports_usb3: bool,
@@ -859,6 +864,7 @@ pub struct Fact {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FactCategory {
+    Platform,
     Topology,
     Speed,
     Power,
@@ -961,7 +967,7 @@ pub enum PowerIssueType {
     PpsNotAvailable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventSummary {
     pub total_events: usize,
     pub connects: usize,

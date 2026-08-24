@@ -25,6 +25,32 @@ pub enum PlatformKey {
 }
 
 impl PlatformKey {
+    /// Detect the host platform family from OS/arch strings
+    /// (e.g. `("macOS", "aarch64")` -> MacAppleSilicon).
+    pub fn detect(os: &str, arch: &str) -> Option<Self> {
+        let os = os.to_ascii_lowercase();
+        let arch = arch.to_ascii_lowercase();
+        let is_arm = arch.starts_with("aarch") || arch.starts_with("arm");
+        match os.as_str() {
+            "windows" => Some(if is_arm {
+                PlatformKey::WindowsArm
+            } else {
+                PlatformKey::WindowsX86
+            }),
+            "macos" | "darwin" => Some(if arch.starts_with("aarch") {
+                PlatformKey::MacAppleSilicon
+            } else {
+                PlatformKey::MacIntel
+            }),
+            "linux" => Some(if is_arm {
+                PlatformKey::LinuxArm
+            } else {
+                PlatformKey::LinuxX86
+            }),
+            _ => None,
+        }
+    }
+
     /// Human-readable display name.
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -133,6 +159,69 @@ impl Profile {
     pub fn rule_override(&self, rule_id: &str) -> Option<&RuleOverride> {
         self.rules.iter().find(|r| r.rule_id == rule_id)
     }
+
+    /// Serialize as pretty TOML (for `skirr profile --dump` style flows).
+    pub fn to_toml_pretty(&self) -> Result<String, ProfileError> {
+        toml::to_string_pretty(self).map_err(|e| ProfileError::Toml(e.to_string()))
+    }
+
+    /// Parse from TOML text.
+    pub fn from_toml_str(s: &str) -> Result<Self, ProfileError> {
+        toml::from_str(s).map_err(|e| ProfileError::Toml(e.to_string()))
+    }
+
+    /// Parse from JSON text.
+    pub fn from_json_str(s: &str) -> Result<Self, ProfileError> {
+        serde_json::from_str(s).map_err(|e| ProfileError::Json(e.to_string()))
+    }
+
+    /// Load from a file; format chosen by extension (.toml/.json).
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ProfileError> {
+        let path = path.as_ref();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let text = std::fs::read_to_string(path)?;
+        match ext.as_str() {
+            "toml" => Self::from_toml_str(&text),
+            "json" => Self::from_json_str(&text),
+            other => Err(ProfileError::UnsupportedExtension(other.to_string())),
+        }
+    }
+
+    /// Save as the file format matching the extension.
+    pub fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), ProfileError> {
+        let path = path.as_ref();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        let text = match ext.as_str() {
+            "json" => {
+                serde_json::to_string_pretty(self).map_err(|e| ProfileError::Json(e.to_string()))?
+            }
+            "toml" => self.to_toml_pretty()?,
+            other => return Err(ProfileError::UnsupportedExtension(other.to_string())),
+        };
+        std::fs::write(path, text)?;
+        Ok(())
+    }
+}
+
+/// Errors from profile loading/saving.
+#[derive(Debug, thiserror::Error)]
+pub enum ProfileError {
+    #[error("invalid TOML profile: {0}")]
+    Toml(String),
+    #[error("invalid JSON profile: {0}")]
+    Json(String),
+    #[error("unsupported profile file extension: {0}")]
+    UnsupportedExtension(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 #[cfg(test)]

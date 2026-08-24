@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 10%**
+**Overall Progress: 17%** *(phase-weighted: Phases 0–1 complete)*
 
 ---
 
@@ -112,13 +112,14 @@ CI must build all four artifacts on every release tag.
 - **Notes**: Delivered in `skirr-core/src/backend.rs`. Single `BackendError` (Unsupported / PermissionDenied / OsApi / NotMonitoring) carries backend name context; object-safe traits (`Box<dyn UsbBackend>` verified). Sync design + channel-backed `poll_event(timeout)` keeps skirr-core runtime-free. Includes `StubBackend` (test/CLI bring-up) with lifecycle + event tests; 9 unit tests green.
 
 ### 1.3 Rule Engine Implementation
-- [ ] Profile loader (TOML/JSON)
-- [ ] Fact collector from normalized model
-- [ ] Rule evaluator (max hubs, max hops, max tiers, min speed, etc.)
-- [ ] Verdict generator (PASS/WARNING/FAIL)
-- [ ] Explanation formatter (FACT/RULE/VERDICT output)
-- [ ] Default "Skirr Standard Profile v1.0" — port Shoko's `usb_data.csv` limits (see table above)
-- **Progress: 0%**
+- [x] Profile loader (TOML/JSON)
+- [x] Fact collector from normalized model
+- [x] Rule evaluator (max hubs, max hops, max tiers, min speed, etc.)
+- [x] Verdict generator (PASS/WARNING/FAIL)
+- [x] Explanation formatter (FACT/RULE/VERDICT output)
+- [x] Default "Skirr Standard Profile v1.0" — port Shoko's `usb_data.csv` limits (see table above)
+- **Progress: 100%**
+- **Notes**: `rule_engine.rs`: `RuleEngine::evaluate(SystemTopology) -> DiagnosticResult`. Chain metrics recomputed from parent links (not cached counters). Rules: max_hops/max_tiers/max_hubs (at-limit=WARNING, over=FAIL), speed_bottleneck (severity-mapped), orphaned_device. Unknown platform -> overall UNKNOWN. `format_report()` renders FACT/RULE/VERDICT text. Profile loaders in profile.rs (`from_toml_str/from_json_str/from_path/save`, `PlatformKey::detect`). Model additions: `UsbDevice.is_internal`, `FactCategory::Platform`, `Default` derives on EventSummary/HostControllerCapabilities. 18 unit tests green; local fmt/clippy clean (CI stays PAUSED per CI Status).
 
 ---
 
@@ -427,7 +428,7 @@ CI must build all four artifacts on every release tag.
 | Phase | Name | Progress | Status |
 |-------|------|----------|--------|
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
-| 1 | Core Data Model & Normalization | 67% | [~] In progress (1.1, 1.2 done) |
+| 1 | Core Data Model & Normalization | 100% | [x] Completed |
 | 2 | Windows Backend | 0% | [ ] Not started |
 | 3 | macOS Backend | 0% | [ ] Not started |
 | 4 | CLI | 0% | [ ] Not started |
@@ -439,7 +440,7 @@ CI must build all four artifacts on every release tag.
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 10%**
+**Total Project Progress: 17%** *(phase-weighted: Phases 0–1 complete; MVP core done)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -474,14 +475,13 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 1.3 - Rule Engine Implementation (skirr-core)
-**Action**: Create `skirr-core/src/rule_engine.rs`:
-- Profile loader (TOML/JSON) — `Profile` already exists in profile.rs; add `Profile::from_toml_file`/`from_json_str`
-- Fact collector from normalized model (SystemTopology → Vec<Fact>)
-- Rule evaluator (max hubs, max hops, max tiers, min speed) using StabilityLimits
-- Verdict generator (PASS/WARNING/FAIL)
-- Explanation formatter (FACT/RULE/VERDICT output, Shoko-style)
-- Wire default `Profile::standard_v1()` as built-in
-**Reference**: model.rs DiagnosticResult/RuleEvaluation/Fact types; DATA_MAP.md §12
+**Current**: Phase 2.1 - Windows PnP/SetupAPI Enumeration (skirr-windows)
+**Action**: Implement SetupAPI/CfgMgr32 enumeration behind `#[cfg(windows)]` modules:
+- `enumerate.rs`: `SetupDiGetClassDevs` (GUID_DEVCLASS_USB, DIGCF_PRESENT) + `SetupDiEnumDeviceInfo` + `SetupDiGetDeviceRegistryPropertyW` -> UsbDevice (VID/PID from hardware ID, manufacturer/product/desc, serial)
+- `topology.rs` (Phase 2.2 prep): `CM_Get_Parent`/DEVPKEY_Device_Parent parent map
+- Keep non-Windows builds compiling: gate all windows-crate usage; stub path returns `BackendError::Unsupported`
+- Implement against skirr-core traits (`UsbBackend`) so skirr-cli can select it
+**Verify locally**: `cargo check --workspace` must stay green on macOS (cfg gating); full behavior testable later on a Windows runner/CI (currently PAUSED)
+**Reference**: DATA_MAP.md §1 Windows column; model.rs UsbDevice
 ---
-*Last updated: 2026-08-24 | Phase 1.2 complete; next agent: start Phase 1.3 (final MVP-core phase)*
+*Last updated: 2026-08-24 | Phase 1 complete (MVP core). Cross-phase gate open: Phase 2 may start.*
