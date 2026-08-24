@@ -12,6 +12,7 @@
     <nav id="tabs">
       <button data-view="overview" class="tab active">Overview</button>
       <button data-view="topology" class="tab">Topology</button>
+      <button data-view="displays" class="tab">Displays</button>
       <button data-view="monitor" class="tab">Monitor</button>
       <button data-view="diagnose" class="tab">Diagnose</button>
       <button data-view="report" class="tab">Report</button>
@@ -27,10 +28,21 @@
     <section id="view-topology" class="view">
       <div class="toolbar">
         <button id="topology-refresh">Refresh</button>
-        <span class="hint">One chain per physical port — every hub inside a dock stays visible.</span>
+        <span class="hint">One chain per physical port — click a device for details.</span>
       </div>
-      <div id="topology-content"></div>
+      <div id="topology-layout">
+        <div id="topology-content"></div>
+        <aside id="details-panel" class="hidden"></aside>
+      </div>
       <div id="topology-error" class="error hidden"></div>
+    </section>
+
+    <section id="view-displays" class="view">
+      <div class="toolbar">
+        <button id="displays-refresh">Refresh</button>
+      </div>
+      <div id="displays-content"></div>
+      <div id="displays-error" class="error hidden"></div>
     </section>
 
     <section id="view-monitor" class="view">

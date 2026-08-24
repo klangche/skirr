@@ -45,6 +45,7 @@ fn build_backend() -> BackendResult<Box<dyn UsbBackend>> {
 
 #[derive(Debug, Clone, Serialize)]
 struct ChainNode {
+    id: uuid::Uuid,
     label: String,
     vid: u16,
     pid: u16,
@@ -59,6 +60,7 @@ struct ChainNode {
 impl ChainNode {
     fn from_device(dev: &UsbDevice, children: Vec<ChainNode>) -> Self {
         Self {
+            id: dev.id,
             label: dev
                 .product
                 .as_deref()
@@ -210,6 +212,212 @@ struct Overview {
 // ---------------------------------------------------------------------------
 // Commands.
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+struct DeviceDetail {
+    id: uuid::Uuid,
+    label: String,
+    platform_id: String,
+    vid: u16,
+    pid: u16,
+    manufacturer: Option<String>,
+    serial_number: Option<String>,
+    class: String,
+    max_speed_mbps: u64,
+    current_speed_mbps: u64,
+    is_hub: bool,
+    hub_ports: Option<u8>,
+    port_number: Option<u8>,
+    tier: u8,
+    hop_count: u8,
+    status: String,
+    dock_family: Option<String>,
+    usb_c: Option<UsbCDetail>,
+    power_contract_mw: Option<u32>,
+    pps_supported: Option<bool>,
+    has_thunderbolt: bool,
+    has_usb4: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UsbCDetail {
+    port_type: String,
+    current_mode: String,
+    pd_supported: bool,
+    pd_revision: Option<String>,
+    alt_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HubPortSlot {
+    number: u8,
+    device_label: Option<String>,
+    vid: Option<u16>,
+    pid: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HubPortMap {
+    id: uuid::Uuid,
+    label: String,
+    platform_id: String,
+    port_count: u8,
+    ports: Vec<HubPortSlot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DisplaySummary {
+    name: String,
+    manufacturer_id: Option<String>,
+    connection_type: Option<String>,
+    current_resolution: Option<String>,
+    preferred_resolution: Option<String>,
+    refresh_hz: Option<u16>,
+    hdr: bool,
+    primary: bool,
+    internal: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DetailsPayload {
+    devices: Vec<DeviceDetail>,
+    hubs: Vec<HubPortMap>,
+    displays: Vec<DisplaySummary>,
+}
+
+fn build_details(topo: &SystemTopology) -> DetailsPayload {
+    let mut children_of: std::collections::HashMap<uuid::Uuid, Vec<&UsbDevice>> =
+        std::collections::HashMap::new();
+    for dev in &topo.devices {
+        if let Some(pid) = dev.parent_id {
+            children_of.entry(pid).or_default().push(dev);
+        }
+    }
+    for kids in children_of.values_mut() {
+        kids.sort_by_key(|d| d.port_number.unwrap_or(0));
+    }
+
+    let devices = topo
+        .devices
+        .iter()
+        .map(|dev| DeviceDetail {
+            id: dev.id,
+            label: dev
+                .product
+                .as_deref()
+                .or(dev.manufacturer.as_deref())
+                .unwrap_or("device")
+                .to_string(),
+            platform_id: dev.platform_id.clone(),
+            vid: dev.vendor_id,
+            pid: dev.product_id,
+            manufacturer: dev.manufacturer.clone(),
+            serial_number: dev.serial_number.clone(),
+            class: format!("{:?}", dev.device_class),
+            max_speed_mbps: dev.max_supported_speed.mbps(),
+            current_speed_mbps: dev.current_link_speed.mbps(),
+            is_hub: dev.is_hub,
+            hub_ports: dev.hub_info.as_ref().map(|h| h.port_count),
+            port_number: dev.port_number,
+            tier: dev.tier,
+            hop_count: dev.hop_count,
+            status: format!("{:?}", dev.connection_status),
+            dock_family: dev.properties.get("dock_family").cloned(),
+            usb_c: dev.usb_c_info.as_ref().map(|c| UsbCDetail {
+                port_type: format!("{:?}", c.port_type),
+                current_mode: format!("{:?}", c.current_mode),
+                pd_supported: c.pd_supported,
+                pd_revision: c.pd_revision.clone(),
+                alt_modes: c.alt_modes.iter().map(|m| format!("{m:?}")).collect(),
+            }),
+            power_contract_mw: dev.power_info.as_ref().and_then(|p| p.contract_power_mw),
+            pps_supported: dev.power_info.as_ref().map(|p| p.pps_supported),
+            has_thunderbolt: dev.thunderbolt_info.is_some(),
+            has_usb4: dev.usb4_info.is_some(),
+        })
+        .collect();
+
+    let hubs = topo
+        .devices
+        .iter()
+        .filter(|d| d.is_hub)
+        .map(|hub| {
+            let slots: Vec<HubPortSlot> =
+                (1..=hub.hub_info.as_ref().map(|h| h.port_count).unwrap_or(0))
+                    .map(|number| {
+                        let occupant = children_of
+                            .get(&hub.id)
+                            .and_then(|kids| kids.iter().find(|k| k.port_number == Some(number)));
+                        HubPortSlot {
+                            number,
+                            device_label: occupant
+                                .and_then(|o| o.product.as_deref())
+                                .map(str::to_string),
+                            vid: occupant.map(|o| o.vendor_id),
+                            pid: occupant.map(|o| o.product_id),
+                        }
+                    })
+                    .collect();
+            HubPortMap {
+                id: hub.id,
+                label: hub
+                    .product
+                    .as_deref()
+                    .or(hub.manufacturer.as_deref())
+                    .unwrap_or("hub")
+                    .to_string(),
+                platform_id: hub.platform_id.clone(),
+                port_count: hub.hub_info.as_ref().map(|h| h.port_count).unwrap_or(0),
+                ports: slots,
+            }
+        })
+        .collect();
+
+    let displays = topo
+        .displays
+        .iter()
+        .map(|d| DisplaySummary {
+            name: d
+                .name
+                .as_deref()
+                .or(d.manufacturer_id.as_deref())
+                .unwrap_or("Display")
+                .to_string(),
+            manufacturer_id: d.manufacturer_id.clone(),
+            connection_type: d.connection_type.map(|t| format!("{t:?}")),
+            current_resolution: d.current_resolution.as_ref().map(resolution_label),
+            preferred_resolution: d.preferred_resolution.as_ref().map(resolution_label),
+            refresh_hz: d.current_refresh_rate,
+            hdr: d.hdr_supported,
+            primary: d.is_primary,
+            internal: d.is_internal,
+        })
+        .collect();
+
+    DetailsPayload {
+        devices,
+        hubs,
+        displays,
+    }
+}
+
+fn resolution_label(r: &skirr_core::DisplayResolution) -> String {
+    match (&r.aspect_ratio, r.is_interlaced) {
+        (Some(ar), true) => format!("{}×{} {}i", r.width, r.height, ar),
+        (Some(ar), false) => format!("{}×{} {}", r.width, r.height, ar),
+        (None, true) => format!("{}×{}i", r.width, r.height),
+        (None, false) => format!("{}×{}", r.width, r.height),
+    }
+}
+
+#[tauri::command]
+fn get_details() -> Result<DetailsPayload, String> {
+    let topo = build_backend().map_err(|e| e.to_string())?.get_topology();
+    match topo {
+        Ok(t) => Ok(build_details(&t)),
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 #[tauri::command]
 fn get_overview() -> Result<Overview, String> {
@@ -470,6 +678,7 @@ pub fn run() {
             get_overview,
             get_port_chains,
             get_topology_json,
+            get_details,
             diagnose,
             generate_report,
             monitor_start,
@@ -590,6 +799,44 @@ mod tests {
         // Leaf nests under the head even though the fixture didn't wire
         // children_ids — parent_id grouping is authoritative.
         assert!(head.root.children.iter().any(|c| c.label == "FlashDrive"));
+    }
+
+    #[test]
+    fn details_carry_device_hub_and_display_summaries() {
+        let mut topo = fixture();
+        topo.devices[0].hub_info = Some(skirr_core::HubInfo {
+            port_count: 4,
+            is_powered: true,
+            power_source: skirr_core::HubPowerSource::SelfPowered,
+            supports_mtt: false,
+            tt_count: 1,
+            tt_type: skirr_core::HubTTType::SingleTT,
+            hub_speed: UsbSpeed::SuperSpeed,
+            ports: Vec::new(),
+        });
+        topo.devices[1].serial_number = Some("SN-123".into());
+
+        let details = build_details(&topo);
+
+        // Device details.
+        assert_eq!(details.devices.len(), 2);
+        let leaf = &details.devices[1];
+        assert_eq!(leaf.serial_number.as_deref(), Some("SN-123"));
+        assert_eq!(leaf.class, "MassStorage");
+        assert!(!leaf.is_hub);
+
+        // Hub port map: port 3 occupied by FlashDrive, others empty.
+        assert_eq!(details.hubs.len(), 1);
+        let map = &details.hubs[0];
+        assert_eq!(map.port_count, 4);
+        let p3 = map.ports.iter().find(|p| p.number == 3).expect("port 3");
+        assert_eq!(p3.device_label.as_deref(), Some("FlashDrive"));
+        assert_eq!(p3.vid, Some(0x0781));
+        let p1 = map.ports.iter().find(|p| p.number == 1).expect("port 1");
+        assert!(p1.device_label.is_none(), "port 1 free");
+
+        // Empty displays serialize as empty list.
+        assert!(details.displays.is_empty());
     }
 
     #[test]

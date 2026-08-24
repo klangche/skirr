@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 83%** *(phase-weighted: Phases 0–8 complete; Phase 9 GUI underway)*
+**Overall Progress: 88%** *(phase-weighted: Phases 0–8 complete; Phase 9 GUI nearly done)*
 
 ---
 
@@ -397,14 +397,15 @@ CI must build all four artifacts on every release tag.
 ### 9.2 Main Views
 - [x] System overview (platform, USB summary) *(verdict card + counts grid: devices/hubs/displays/controllers, OS/arch/admin/VM, backend name)*
 - [x] Topology tree view (expandable) *(per-port chains from `get_port_chains`; `<details>` per root hub, nested ULs per dock hub level, VID:PID/Mbps/[HUB np]/dock badges, free ports; lazy-loads on first tab open)*
-- [x] Hub details (port map) *(covered by per-port chain view for now — dedicated per-hub port-map page deferred until real hardware shows a need)*
-- [ ] Device details (speed, capabilities)
-- [ ] USB-C / Thunderbolt / USB4 panel
-- [ ] Displays panel
+- [x] Hub details (port map) *(collapsible "Port map" table per physical hub after the chain sections: every port slot with occupant VID:PID or empty; built server-side in `build_details` from parent_id grouping)*
+- [x] Device details (speed, capabilities) *(click any node → sticky side panel: IDs, platform_id, manufacturer, serial, class, max vs link speed with below-max warning, port/tier/hops, status, dock family, PD contract mW, PPS, Thunderbolt/USB4 presence flags, full USB-C sub-table when `usb_c_info` present; responsive collapse under 55rem)*
+- [~] USB-C / Thunderbolt / USB4 panel *(USB-C/PD data renders inside the device details panel (port type, mode, PD revision, alt modes); no standalone TB/USB4 panel until Phase 10/11 collectors provide real data — flags already surface in details)*
+- [x] Displays panel *(dedicated Displays tab: card grid with name, connection type, current + preferred resolution mismatch callout, refresh rate, HDR badge, primary/internal markers; served by the same `get_details` command)*
 - [x] Live monitoring view *(start/stop toggle, severity-colored scrolling log, summary line on stop)*
 - [x] Diagnostics/Results view *(verdict badge + rule table with explanations + recommendations)*
 - [x] Export report button *(native save dialog → generate_report writes JSON + optional HTML side-by-side)*
-- **Progress: 67%**
+- **Progress: 100%**
+- **Notes**: New Rust command `get_details` returns typed `DetailsPayload{devices, hubs, displays}` (serializable view models over UsbDevice/HubInfo/DisplayInfo — enums as Debug strings). ChainNode now carries device id for click-through. Details cached client-side, invalidated on Refresh. 3 GUI tests incl. hub-port-map occupancy. clippy/fmt clean; JS syntax-checked; workspace 157 tests still green.
 
 ### 9.3 GUI Polish
 - [ ] Dark/light theme
@@ -486,7 +487,7 @@ CI must build all four artifacts on every release tag.
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
 | 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
-| 9 | Tauri GUI | 40% | [~] In progress (9.1 done; 9.2 shell views live — device/display/USB-C panels remain) |
+| 9 | Tauri GUI | 75% | [~] In progress (9.1–9.2 done; 9.3 polish remains) |
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
@@ -525,14 +526,15 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 9.2 (remaining) - Device / Displays / USB-C panels
-**Action**: Complete the three missing GUI views in `skirr-gui/ui/app.js` + one new Rust command:
-- Add `get_details` command in src-tauri/src/lib.rs returning typed payload: devices with speed/capabilities (`UsbDevice` fields incl. usb_c_info, hub_info), displays list, per-hub port maps
-- Device details: click a node in the topology chain → side panel with VID/PID, speeds (max vs current), class, serial, USB-C/PD info when present
-- Displays panel: name/manufacturer/resolutions/HDR/connection type from topology.displays
-- Hub port map: for each hub, occupied vs free ports with what's plugged into each
-**Verify locally**: cargo test in src-tauri (chain/detail builders), clippy clean; manual UI pass on dev host
-**Reference**: skirr-core/src/model.rs (UsbDevice.usb_c_info, DisplayInfo); get_port_chains command as the pattern
+**Current**: Phase 9.3 - GUI Polish
+**Action**: Polish pass on `skirr-gui/ui/` + small Rust-side hooks:
+- Loading states: skeleton/spinner while IPC calls resolve (overview, topology, displays)
+- Error handling UI: toast/banner pattern instead of inline-only error divs; retry buttons where sensible
+- Dark/light theme: CSS already has prefers-color-scheme — add manual toggle persisted to localStorage
+- First-run Gatekeeper guide: on macOS show a dismissible card pointing at README's xattr/Open Anyway steps (detect via navigator.platform / UA)
+- Responsive layout: verify at 900px min width; details panel already collapses
+**Verify locally**: clippy/fmt clean; JS syntax check; manual UI pass on dev host (empty bus + populated fixture)
+**Reference**: ui/style.css (theme vars already tokenized); app.js view lifecycle
 ---
-*Last updated: 2026-08-24 | Phase 9.1 + GUI shell done: Tauri 2 standalone crate under skirr-gui/src-tauri, vanilla-JS ui/ with Overview/Topology(per-port chains)/Monitor(event-push)/Diagnose/Report views already functional; monitor thread pushes correlated events. Remaining: device-details click-through, displays panel, USB-C panel.*
+*Last updated: 2026-08-24 | Phase 9.2 done: device-details click-through panel, Displays tab, hub port maps, USB-C/PD in details. Remaining 9.2 note: standalone TB/USB4 panel deferred behind Phase 10/11 collectors.*
 ---

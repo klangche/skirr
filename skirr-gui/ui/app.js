@@ -64,6 +64,13 @@ function card(k, v, s) {
 
 // --- Topology ----------------------------------------------------------------
 
+let detailsCache = null; // DetailsPayload from get_details, keyed by device id
+
+async function loadDetails() {
+  if (!detailsCache) detailsCache = await invoke("get_details");
+  return detailsCache;
+}
+
 function nodeHtml(n, depth) {
   const ids = `<span class="ids">${n.vid.toString(16).padStart(4, "0")}:${n.pid.toString(16).padStart(4, "0")}</span>`;
   const speed = n.speed_mbps ? ` <span class="speed">${n.speed_mbps} Mbps</span>` : "";
@@ -73,13 +80,14 @@ function nodeHtml(n, depth) {
   const kids = n.children.length
     ? `<ul>${n.children.map((c) => `<li>${nodeHtml(c, depth + 1)}</li>`).join("")}</ul>`
     : "";
-  return `<span class="dev">${esc(n.label)} ${ids}${hubmark}${speed}${dock}</span>${kids}`;
+  return `<span class="dev clickable" data-device-id="${n.id}" title="Show details">`
+    + `${esc(n.label)} ${ids}${hubmark}${speed}${dock}</span>${kids}`;
 }
 
 async function loadTopology() {
   clearError("#topology-error");
   try {
-    const t = await invoke("get_port_chains");
+    const [t] = await Promise.all([invoke("get_port_chains"), loadDetails()]);
     let html = "";
 
     if (t.internal.length) {
@@ -102,6 +110,8 @@ async function loadTopology() {
         esc(rh.platform_id)} (${rh.port_count} ports)</summary><div class="rh-body">${portsHtml}${free}</div></details>`;
     }
 
+    html += renderHubMaps();
+
     if (!html.replace(/<h3[^>]*>[^<]*<\/h3>/g, "").trim()) {
       html += "<p class='free'>(nothing attached)</p>";
     }
@@ -110,12 +120,117 @@ async function loadTopology() {
     document.querySelectorAll(".rh-section .rh-title").forEach((title) => {
       title.addEventListener("click", () => title.parentElement.classList.toggle("closed"));
     });
+    document.querySelectorAll(".dev.clickable").forEach((el) => {
+      el.addEventListener("click", () => showDeviceDetails(el.dataset.deviceId));
+    });
   } catch (e) {
     showError("#topology-error", String(e));
   }
 }
 
-$("#topology-refresh").addEventListener("click", loadTopology);
+// Hub port maps: one collapsible map per physical hub, rendered after the
+// root-hub chain sections.
+function renderHubMaps() {
+  if (!detailsCache?.hubs?.length) return "";
+  return detailsCache.hubs
+    .map((hub) => {
+      const slots = hub.ports
+        .map((s) => {
+          const occupant = s.device_label
+            ? `${esc(s.device_label)} <span class="ids">${s.vid.toString(16).padStart(4, "0")}:${s.pid.toString(16).padStart(4, "0")}</span>`
+            : "<span class='free'>empty</span>";
+          return `<tr><td>p${s.number}</td><td>${occupant}</td></tr>`;
+        })
+        .join("");
+      return `<details class="hub-map"><summary class="rh-title">Port map — ${esc(hub.label)} (${hub.port_count}p)</summary>`
+        + `<table class="rule-table"><tr><th>Port</th><th>Device</th></tr>${slots}</table></details>`;
+    })
+    .join("");
+}
+
+// --- Device details panel ------------------------------------------------------
+
+function showDeviceDetails(id) {
+  const dev = detailsCache?.devices?.find((d) => d.id === id);
+  const panel = $("#details-panel");
+  if (!dev) {
+    panel.classList.add("hidden");
+    return;
+  }
+  const row = (k, v) => (v == null || v === "" ? "" : `<tr><th>${k}</th><td>${v}</td></tr>`);
+  const ids = `${dev.vid.toString(16).padStart(4, "0")}:${dev.pid.toString(16).padStart(4, "0")}`;
+  const speedNote =
+    dev.max_speed_mbps && dev.current_speed_mbps && dev.current_speed_mbps < dev.max_speed_mbps
+      ? `<span class="sev-warning">running below max</span>`
+      : "";
+  const usbC = dev.usb_c
+    ? `<h3>USB-C</h3><table>${
+        row("Port type", esc(dev.usb_c.port_type)) +
+        row("Mode", esc(dev.usb_c.current_mode)) +
+        row("PD", dev.usb_c.pd_supported ? `yes${dev.usb_c.pd_revision ? ` (${esc(dev.usb_c.pd_revision)})` : ""}` : "no") +
+        (dev.usb_c.alt_modes.length
+          ? row("Alt modes", dev.usb_c.alt_modes.map((m) => esc(m)).join(", "))
+          : "")
+      }</table>`
+    : "";
+  panel.innerHTML =
+    `<button id="details-close" class="hint">✕ close</button>
+     <h2>${esc(dev.label)}</h2>
+     <table>
+       ${row("IDs", `<span class="ids">${ids}</span>`)}
+       ${row("Platform ID", `<code>${esc(dev.platform_id)}</code>`)}
+       ${row("Manufacturer", esc(dev.manufacturer ?? ""))}
+       ${row("Serial", esc(dev.serial_number ?? ""))}
+       ${row("Class", esc(dev.class))}
+       ${row("Max speed", dev.max_speed_mbps ? `${dev.max_speed_mbps} Mbps` : "")}
+       ${row("Link speed", dev.current_speed_mbps ? `${dev.current_speed_mbps} Mbps ${speedNote}` : "")}
+       ${row("Port", dev.port_number ?? "")}
+       ${row("Tier / hops", dev.tier ? `${dev.tier} / ${dev.hop_count}` : "")}
+       ${row("Status", esc(dev.status))}
+       ${row("Dock family", esc(dev.dock_family ?? ""))}
+       ${dev.power_contract_mw ? row("PD contract", `${dev.power_contract_mw} mW`) : ""}
+       ${dev.has_thunderbolt || dev.has_usb4 ? row("Modes", [dev.has_thunderbolt ? "Thunderbolt" : "", dev.has_usb4 ? "USB4" : ""].filter(Boolean).join(", ")) : ""}
+     </table>${usbC}`;
+  panel.classList.remove("hidden");
+  $("#details-close").addEventListener("click", () => panel.classList.add("hidden"));
+}
+
+// --- Displays --------------------------------------------------------------------
+
+async function loadDisplays() {
+  clearError("#displays-error");
+  try {
+    const details = await loadDetails();
+    const list = details.displays;
+    $("#displays-content").innerHTML = list.length
+      ? `<div class="cards">${list
+          .map(
+            (d) => `<div class="card">
+              <div class="k">${d.primary ? "Primary · " : ""}${d.internal ? "Internal" : "External"}${
+                d.connection_type ? ` · ${esc(d.connection_type)}` : ""
+              }</div>
+              <div class="v" style="font-size:1.05rem">${esc(d.name)}</div>
+              <div class="s">
+                ${d.current_resolution ? `${esc(d.current_resolution)}${d.refresh_hz ? ` @ ${d.refresh_hz} Hz` : ""}` : "no mode"}
+                ${d.preferred_resolution && d.current_resolution && d.preferred_resolution !== d.current_resolution
+                  ? `<br/>prefers ${esc(d.preferred_resolution)}` : ""}
+                ${d.hdr ? "<br/><span class='sev-info'>HDR capable</span>" : ""}
+              </div>
+            </div>`
+          )
+          .join("")}</div>`
+      : "<p class='free'>No displays detected.</p>";
+  } catch (e) {
+    showError("#displays-error", String(e));
+  }
+}
+
+$("#displays-refresh").addEventListener("click", loadDisplays);
+
+$("#topology-refresh").addEventListener("click", () => {
+  detailsCache = null;
+  loadTopology();
+});
 
 // --- Monitor ------------------------------------------------------------------
 
@@ -212,11 +327,18 @@ initMonitor();
 
 // Lazy-load heavier views the first time they're opened.
 let topologyLoaded = false;
-new MutationObserver(() => {
+let displaysLoaded = false;
+const viewObserver = new MutationObserver(() => {
   if ($("#view-topology").classList.contains("active") && !topologyLoaded) {
     topologyLoaded = true;
     loadTopology();
   }
-}).observe($("#view-topology"), { attributes: true });
+  if ($("#view-displays").classList.contains("active") && !displaysLoaded) {
+    displaysLoaded = true;
+    loadDisplays();
+  }
+});
+viewObserver.observe($("#view-topology"), { attributes: true });
+viewObserver.observe($("#view-displays"), { attributes: true });
 
 switchView("overview");
