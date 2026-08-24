@@ -60,6 +60,7 @@ impl UsbBackend for SkirrLinuxBackend {
                 topo.displays = displays;
             }
             attach_type_c_info(&mut topo);
+            skirr_core::docks::annotate_docks(&mut topo);
             Ok(topo)
         }
         #[cfg(not(target_os = "linux"))]

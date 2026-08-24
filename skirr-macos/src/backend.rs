@@ -41,6 +41,7 @@ impl UsbBackend for SkirrMacosBackend {
             if let Err(_e) = crate::displays::attach(&mut topo) {
                 topo.displays.clear();
             }
+            skirr_core::docks::annotate_docks(&mut topo);
             Ok(topo)
         }
         #[cfg(not(target_os = "macos"))]

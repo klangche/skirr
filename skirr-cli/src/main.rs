@@ -5,6 +5,7 @@ use skirr_core::{BackendError, BackendResult, Profile, RuleEngine, SystemTopolog
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 mod backend;
 mod render;
@@ -46,7 +47,14 @@ enum Command {
     /// Run the rule engine and show a verdict
     Diagnose,
     /// Live hotplug monitoring (Ctrl-C to exit)
-    Monitor,
+    Monitor {
+        /// Stop automatically after this many seconds (default: run until Ctrl-C)
+        #[arg(long)]
+        duration: Option<u64>,
+        /// Poll interval in milliseconds
+        #[arg(long, default_value_t = 500)]
+        interval: u64,
+    },
     /// Write a JSON report of the current state
     Report {
         /// Output path (default: ./skirr-report.json)
@@ -77,7 +85,7 @@ fn run(cli: Cli) -> Result<ExitCode, BackendError> {
         Command::Hubs => cmd_hubs(&*backend, cli.json)?,
         Command::Ports => cmd_ports(&*backend, cli.json)?,
         Command::Diagnose => return cmd_diagnose(&*backend, cli.json, &profile),
-        Command::Monitor => cmd_monitor(&*backend)?,
+        Command::Monitor { duration, interval } => cmd_monitor(&*backend, duration, interval)?,
         Command::Report { out } => cmd_report(&*backend, &out, &profile)?,
     }
     Ok(ExitCode::SUCCESS)
@@ -252,31 +260,84 @@ fn shutdown_requested() -> bool {
     SHUTDOWN.load(Ordering::SeqCst)
 }
 
-fn cmd_monitor(backend: &dyn UsbBackend) -> BackendResult<()> {
+fn cmd_monitor(
+    backend: &dyn UsbBackend,
+    duration: Option<u64>,
+    interval_ms: u64,
+) -> BackendResult<()> {
     let mut session = backend.monitor()?;
     session.start_monitoring()?;
     install_shutdown_watcher();
-    println!("Monitoring USB events - press Ctrl-C to stop.");
+    match duration {
+        Some(secs) => println!("Monitoring USB events for {secs}s (Ctrl-C to stop early)."),
+        None => println!("Monitoring USB events - press Ctrl-C to stop."),
+    }
+
+    let started = std::time::Instant::now();
+    let poll_interval = Duration::from_millis(interval_ms.max(50));
+
+    // Correlate raw events against the current topology snapshot.
+    let topo = backend.get_topology()?;
+    let mut correlator = skirr_core::correlate::EventCorrelator::new(&topo);
+
     while !shutdown_requested() {
-        match session.poll_event(std::time::Duration::from_millis(500))? {
+        if let Some(secs) = duration {
+            if started.elapsed().as_secs() >= secs {
+                break;
+            }
+        }
+        match session.poll_event(poll_interval)? {
             Some(event) => {
-                let port = event
-                    .port_number
-                    .map(|p| format!(" port {p}"))
-                    .unwrap_or_default();
-                println!(
-                    "[{}] {:?}{} {}",
-                    event.timestamp.to_rfc3339(),
-                    event.event_type,
-                    port,
-                    event.details
-                );
+                let outcome = correlator.ingest(event);
+                match outcome.correlated {
+                    Some(skirr_core::correlate::CorrelatedEvent::HubRemoval {
+                        hub_event,
+                        child_disconnects,
+                        max_depth,
+                    }) => {
+                        println!(
+                            "[{}] HUB REMOVAL {} ({} device(s), depth {max_depth})",
+                            hub_event.timestamp.to_rfc3339(),
+                            hub_event.details,
+                            child_disconnects
+                        );
+                    }
+                    Some(skirr_core::correlate::CorrelatedEvent::Single(event)) => {
+                        let port = event
+                            .port_number
+                            .map(|p| format!(" port {p}"))
+                            .unwrap_or_default();
+                        println!(
+                            "[{}] {:?}{} {}",
+                            event.timestamp.to_rfc3339(),
+                            event.event_type,
+                            port,
+                            event.details
+                        );
+                    }
+                    None => {}
+                }
+                if let Some(count) = outcome.flap_count {
+                    eprintln!(
+                        "  WARNING: device flapping ({} connects in the last minute)",
+                        count
+                    );
+                }
             }
             None => continue,
         }
     }
     session.stop_monitoring()?;
-    println!("Monitor stopped.");
+
+    let summary = correlator.finish(duration.unwrap_or_else(|| started.elapsed().as_secs()));
+    println!(
+        "Monitor stopped. {} event(s): {} connect(s), {} disconnect(s), {} re-enum(s); stability {}/100.",
+        summary.total_events,
+        summary.connects,
+        summary.disconnects,
+        summary.re_enumerations,
+        summary.stability_score
+    );
     Ok(())
 }
 

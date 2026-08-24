@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 58%** *(phase-weighted: Phases 0–6 complete, Phase 7 at 67%; cross-target compile verification added in 7.2)*
+**Overall Progress: 67%** *(phase-weighted: Phases 0–7 complete; live monitoring & reports next)*
 
 ---
 
@@ -324,6 +324,8 @@ CI must build all four artifacts on every release tag.
 
 ## Phase 7: P1 - USB-C & Display Diagnostics
 
+**Status: [x] Completed (USB-C modules + shared EDID/dock analysis in core; native Type-C paths 🟡 pending hardware sweep; cross-target compile verification added in 7.2)**
+
 ### 7.1 USB-C Capabilities (All Platforms)
 - [x] Detect USB-C ports vs USB-A
 - [x] DisplayPort Alt Mode detection
@@ -343,22 +345,24 @@ CI must build all four artifacts on every release tag.
 - **Notes**: EDID decoding moved into **`skirr_core::edid`** (`parse_edid` + `detect_hdr_support`) so all three backends share one tested implementation — fixed a latent descriptor-tag bug from the 6.5 parser along the way (tags live in byte 3 of text descriptors). HDR = CTA-861 extension walk for the HDR Static Metadata data block (tag 7); wired into all three paths. Windows/macOS displays attach best-effort in get_topology (enumeration failure never sinks the topology snapshot). **Bonus**: added cross-target compile verification (`cargo check --target x86_64-pc-windows-msvc` / `x86_64-unknown-linux-gnu`, std-only, no linker) and fixed ~20 latent cfg-gated bugs this surfaced across the Windows/Linux backends (SPDRP_MFG rename, DEVPROPKEY path, u16→u8 buffer casts, CONFIGRET comparisons, chrono::from_timestamp arity, private-module visibility). Windows/Linux backends are now genuinely compile-verified; only runtime behavior remains 🟡. 138 tests.
 
 ### 7.3 Dock Analysis
-- [ ] Identify known dock VID/PIDs
-- [ ] Map dock internal hub topology
-- [ ] Port mapping (which port = video, which = data, etc.)
-- [ ] Power delivery from dock
-- **Progress: 0%**
+- [x] Identify known dock VID/PIDs *(silicon-family table at VID level — DisplayLink/Realtek/VIA Labs/Genesys Logic/ASMedia/TI/Cypress/Terminus; PID-level catalogs rot, VID doesn't)*
+- [x] Map dock internal hub topology *(dock_anchor property marks the topmost external recognized hub; physical layout already carried by tier/port/hop fields from Phase 1 — no duplication)*
+- [x] Port mapping (which port = video, which = data, etc.) *(evidence-only: DisplayLink ⇒ video role; everything unprovable stays unclaimed)*
+- [x] Power delivery from dock *(reuses 7.1 UsbCInfo/PD data when the dock partner exposes it; honest absence otherwise)*
+- **Progress: 100%**
+- **Notes**: New `skirr_core::docks` module — `hub_family()` table, `DockRole{Hub,VideoAdapter,Component}`, `annotate_docks(&mut topo)` post-pass wired into all three backends' get_topology (after USB-C/display attach). Stamps `dock_family` / `dock_role` / `dock_anchor` properties; unrecognized devices left untouched. Pure logic tested on every host.
 
 ---
 
 ## Phase 8: P1 - Live Monitoring & Reports
 
 ### 8.1 Live Monitoring Enhancement
-- [ ] Configurable monitoring duration
-- [ ] Event correlation (re-enumeration chains)
-- [ ] Stability scoring (flapping detection)
-- [ ] Summary statistics
-- **Progress: 0%**
+- [x] Configurable monitoring duration *(CLI `monitor --duration <secs>` + `--interval <ms>` (floor 50ms); Ctrl-C still works)*
+- [x] Event correlation (re-enumeration chains) *(new `skirr_core::correlate`: `EventCorrelator` holds a hub's disconnect until its subtree drains, then surfaces one `HubRemoval{child_disconnects, max_depth}`; unknown parents pass through)*
+- [x] Stability scoring (flapping detection) *(`FlapDetector` sliding window — ≥3 connects/60s ⇒ warning line; `stability_score()` 0–100 penalizes re-enums/speed-changes/errors per minute. Rule-engine fact deferred: `evaluate()` is stateless and can't see session history — the score ships in `EventSummary` instead)*
+- [x] Summary statistics *(end-of-session line: totals/connects/disconnects/re-enums/stability; `EventSummary` fully populated incl. duration)*
+- **Progress: 100%**
+- **Notes**: All correlation logic lives in skirr-core (7 new tests: subtree collapse, pass-through, flap threshold + window expiry, summary counts, perfect session, undrained-hub flush). CLI monitor consumes it live against the current topology snapshot; verified end-to-end on dev host (`--duration 2 --interval 200` → "0 event(s)... stability 100/100"). 149 tests workspace-wide.
 
 ### 8.2 JSON Export
 - [ ] Schema matching Section 21
@@ -475,7 +479,7 @@ CI must build all four artifacts on every release tag.
 | 4 | CLI | 100% | [x] Completed (all commands live-smoke-tested) |
 | 5 | Distribution & Documentation | 90% | [~] In progress (5.1–5.2 done; 5.3 macOS done, Win/Ubuntu at tag time) |
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
-| 7 | USB-C & Display Diagnostics | 67% | [~] In progress (7.1–7.2 done; 7.3 next) |
+| 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
 | 8 | Live Monitoring & Reports | 0% | [ ] Not started |
 | 9 | Tauri GUI | 0% | [ ] Not started |
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
@@ -516,13 +520,13 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 7.3 - Dock Analysis
-**Action**: Identify USB docks/hubs and map their internal layout (DATA_MAP §5/§9):
-- Known dock VID/PID table: static curated list in skirr-core (e.g. DisplayLink 17e9:*, Dell/HP/Lenovo/CalDigit/Anker hubs, Realtek 0bda, VIA 2109, Genesys 05e3, ASMedia 174c) with a `DockInfo`-ish model — check core model for an existing dock concept first; if none, add minimal `properties["dock_vendor"]` tagging rather than new structs (keep Phase 8 free to formalize)
-- Dock internal hub topology: when a detected dock's hub tree is present, tag each child device with its physical side (downstream-facing port N) using existing tier/port fields; no guessing beyond hub descriptors
-- Port mapping (video vs data): only where evidence exists — DisplayLink vendor id ⇒ video adapter present; UVC/UAC class devices under the dock's hub; otherwise Unknown-with-reason
-- Power delivery from dock: reuse 7.1 UsbCInfo/PD data when the dock partner exposes it (Linux typec/power_supply); else honest absence
-**Verify locally**: pure VID/PID table + classification tests on all hosts; live path 🟡 as usual
-**Reference**: docs/DATA_MAP.md §5, §9; skirr-{linux,macos,windows}/src/usb_c.rs from 7.1
+**Current**: Phase 8.1 - Live Monitoring Enhancement
+**Action**: Upgrade hotplug monitoring from raw events to correlated, stability-aware streams:
+- Configurable monitoring duration: CLI `monitor --duration <secs>` (currently Ctrl-C only); poll interval flag too (`--interval <ms>`), validated against backend minimums
+- Event correlation: re-enumeration chains — when a hub disconnects, its subtree produces N disconnect events; correlate into one logical "hub removal" event with child count (match by parent_id/instance prefix in skirr-core::hotplug diff logic or a new core correlator consuming DiagnosticEvents)
+- Stability scoring: flapping detection — device connecting/disconnecting repeatedly within a window ⇒ `properties["flap_count"]` / stability score in event summary; feed a fact for the rule engine (check Profile rules for an existing instability rule first)
+- Keep all pure logic in skirr-core (testable on every host); backends only produce raw diffs as today
+**Verify locally**: correlator unit tests (synthetic event sequences: single plug, hub-with-children removal, flapper); live monitor smoke test on dev host (empty bus must still work)
+**Reference**: skirr-{linux}/src/{hotplug,monitor}.rs patterns from Phase 6; skirr-core/src/model.rs DiagnosticEvent/EventSummary
 ---
-*Last updated: 2026-08-24 | Phases 7.1–7.2 done (USB-C modules + shared core EDID parser w/ HDR, cross-target compile verification added); next agent: Phase 7.3*
+*Last updated: 2026-08-24 | Phase 7 COMPLETE (USB-C + displays + docks; cross-target verification); next agent: Phase 8.1*

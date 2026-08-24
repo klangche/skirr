@@ -44,6 +44,7 @@ impl UsbBackend for SkirrWindowsBackend {
             if crate::displays::attach(&mut topo).is_err() {
                 topo.displays.clear();
             }
+            skirr_core::docks::annotate_docks(&mut topo);
             Ok(topo)
         }
         #[cfg(not(windows))]
