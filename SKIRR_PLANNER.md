@@ -165,11 +165,14 @@ CI must build all four artifacts on every release tag.
 ## Phase 3: MVP - macOS Backend (skirr-macos)
 
 ### 3.1 IOKit/IORegistry Enumeration
-- [ ] Enumerate USB devices via IOKit
-- [ ] Extract VID, PID, manufacturer, product, serial
-- [ ] Get device class/subclass/protocol
-- [ ] Get device descriptor information
-- [ ] system_profiler fallback for cross-check
+- [x] Enumerate USB devices via IOKit
+- [x] Extract VID, PID, manufacturer, product, serial
+- [x] Get device class/subclass/protocol
+- [x] Get device descriptor information
+- [x] system_profiler fallback for cross-check
+- **Progress: 100%**
+- **Notes**: New `skirr-macos` structure (`native.rs` + `backend.rs`). IOKit primary: manual FFI declarations (`#[link(name="IOKit", kind="framework")]`) — `IOServiceMatching("IOUSBDevice")` → iterator → `IORegistryEntryCreateCFProperties` reads `idVendor/idProduct/bDeviceClass/bDeviceSubClass/bDeviceProtocol/bcdUSB/locationID/USB Vendor Name/USB Product Name/USB Serial Number`; parent resolved via `IORegistryEntryGetParentEntry` walking to the nearest ancestor that is itself a USB device (controllers → None, mirroring Windows PCI-root semantics). Fallback: `system_profiler SPUSBDataType -json` tree flattening with `_items`-based parent links and `location_id` parsing incl. `"0x… / N"` port suffix (Shoko `_mac_parent_map` technique). Chain per DATA_MAP §11. Instance-ID scheme deliberately mirrors Windows shape `USB\VID_x&PID_y\<hex locationID>` so topology/rule layers stay platform-agnostic. Normalization is numeric-field driven (no string parsing); class codes map via core `UsbClass::from_u8`. `platform_info()` from sw_vers/sysctl/id -u/env USER; VM detection is a pure tested fn over hw.model. 13 tests green on the macOS dev host incl. **live** enumeration smoke test. ⚠️ Dev host currently has ZERO USB devices attached (controllers only) — live path verified error-free + empty-safe, but device-bearing results need a plug-in check before release (folds into existing 🟡 review sweep).
+- **Deps added**: serde_json, chrono, uuid (workspace versions)
 - **Progress: 0%**
 
 ### 3.2 Topology Construction
@@ -438,7 +441,7 @@ CI must build all four artifacts on every release tag.
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
 | 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
-| 3 | macOS Backend | 0% | [ ] Not started |
+| 3 | macOS Backend | 25% | [~] In progress (3.1 done, live-tested on dev host) |
 | 4 | CLI | 0% | [ ] Not started |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
 | 6 | Linux Backend | 0% | [ ] Not started |
@@ -483,14 +486,14 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 3.1 - IOKit/IORegistry Enumeration (skirr-macos)
-**Action**: Implement macOS enumeration behind `#[cfg(target_os = "macos")]`:
-- IOKit route: `IOServiceGetMatchingServices(kIOUSBDeviceClassName)` / `kIOMasterPortDefault`, read properties from IORegistry: `idVendor`, `idProduct`, `USB Product Name`, `USB Vendor Name`, `USB Serial Number`, `bDeviceClass/bDeviceSubClass/bDeviceProtocol`, `bcdUSB`, locationID
-- Prefer `objc2`/`core-foundation` crates already in workspace deps; if bindings too thin, fall back to spawning `system_profiler SPUSBDataType -json` (Shoko-proven) and parse JSON into the same raw records — keep BOTH: IOKit primary, system_profiler fallback (DATA_MAP §11 chain), same shape as Windows native/fallback split in skirr-windows/src/native.rs
-- Define `RawDeviceInfo`-equivalent struct local to skirr-macos; reuse core normalization (`build_usb_device` pattern from skirr-windows/src/backend.rs)
-- Implement `platform_info()` for macOS (sw_vers/sysctl via commands or objc2 NSProcessInfo; is_admin = geteuid()==0)
-- Keep non-macOS builds green (Unsupported elsewhere); parsing layers pure + unit-tested off-Windows AND off-macOS where possible
-**Verify locally**: cargo test/check/clippy on macOS must pass — NOTE dev host IS macOS, so IOKit path can be compile-checked AND run-tested here (no 🟡 needed for this phase's core work!)
-**Reference**: DATA_MAP.md §3 macOS column, §11 fallback chain; Shoko usb_topology.py `_macos_*` functions
+**Current**: Phase 3.2 - Topology Construction (skirr-macos)
+**Action**: Build parent/child topology from the raw records behind `#[cfg(target_os = "macos")]`:
+- Records already carry `parent` (instance string) from both collectors — link parents/children by instance ID, compute hops/tiers/depth, port attribution
+- Port number: derive from locationID deltas? NO — locationID encodes the full path: each nibble level is a port number up the hub chain (`0x14`<b>`3`</b>`0000`: port 3 at level 2). Parse trailing non-zero nibbles of the child's locationID vs its parent's to extract the immediate port — pure fn + tests off-macOS
+- Identify host controllers: records with `parent == None` that are root-hub-adjacent; Apple controllers appear as the top of each tree. Root hubs on modern Apple Silicon are often invisible in IOUSBDevice matching — if no explicit root-hub records exist, synthesize RootHub entries per controller tree (document deviation in code comment)
+- Fill `SystemTopology` (host_controllers, root_hubs, devices with parent_id/children_ids/port_number); wire `get_topology()` in backend.rs replacing the Unsupported stub
+- Mirror skirr-windows/src/topology.rs structure closely — same semantics as rule engine expects (hops = ancestor hub count, tiers = hops+1)
+**Verify locally**: cargo test/clippy on macOS must pass; this phase IS run-testable on the dev host once any USB device is plugged in — note in handoff whether a device was available
+**Reference**: DATA_MAP.md §2/§3 topology columns; skirr-windows/src/topology.rs as structural template
 ---
-*Last updated: 2026-08-24 | Phase 2 COMPLETE (all native paths 🟡 pending Windows-runner review); next agent: Phase 3.1*
+*Last updated: 2026-08-24 | Phase 3.1 done (live smoke test passed; no devices attached on dev host during verification); next agent: Phase 3.2*
