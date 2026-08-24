@@ -12,6 +12,7 @@ pub mod hotplug;
 mod monitor;
 pub mod native;
 pub mod speeds;
+pub mod thunderbolt;
 pub mod topology;
 pub mod usb_c;
 

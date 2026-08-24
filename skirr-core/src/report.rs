@@ -117,6 +117,7 @@ mod tests {
             devices: vec![hub],
             hubs: vec![],
             displays: vec![],
+            thunderbolt_routers: vec![],
             events: vec![],
             platform_info,
         };

@@ -42,6 +42,9 @@ impl UsbBackend for SkirrMacosBackend {
                 topo.displays.clear();
             }
             skirr_core::docks::annotate_docks(&mut topo);
+            // Thunderbolt fabric is best-effort like displays: an empty or
+            // failed sweep must not sink the topology snapshot.
+            topo.thunderbolt_routers = native::thunderbolt_routers().unwrap_or_default();
             Ok(topo)
         }
         #[cfg(not(target_os = "macos"))]

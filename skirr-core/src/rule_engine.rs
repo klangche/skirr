@@ -505,6 +505,7 @@ mod tests {
             devices,
             hubs: vec![],
             displays: vec![],
+            thunderbolt_routers: vec![],
             events: vec![],
             platform_info: PlatformInfo {
                 os: platform_os.into(),

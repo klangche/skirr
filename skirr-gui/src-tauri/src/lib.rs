@@ -99,6 +99,8 @@ struct TopologyChains {
     devices: usize,
     internal: Vec<ChainNode>,
     external: Vec<RootHubChains>,
+    /// Thunderbolt/USB4 fabric, separate from the USB tree (Phase 10.1).
+    tb_routers: Vec<skirr_core::ThunderboltRouter>,
 }
 
 /// Group a topology into internal chains and one external chain per
@@ -187,6 +189,7 @@ fn build_chains(topo: &SystemTopology) -> TopologyChains {
         devices: topo.devices.len(),
         internal,
         external,
+        tb_routers: topo.thunderbolt_routers.clone(),
     }
 }
 
@@ -763,6 +766,7 @@ mod tests {
             devices: vec![hub, leaf],
             hubs: Vec::new(),
             displays: Vec::new(),
+            thunderbolt_routers: Vec::new(),
             events: Vec::new(),
             platform_info: PlatformInfo {
                 os: "test".into(),
@@ -799,6 +803,30 @@ mod tests {
         // Leaf nests under the head even though the fixture didn't wire
         // children_ids — parent_id grouping is authoritative.
         assert!(head.root.children.iter().any(|c| c.label == "FlashDrive"));
+    }
+
+    #[test]
+    fn chains_surface_thunderbolt_routers() {
+        let mut topo = fixture();
+        topo.thunderbolt_routers
+            .push(skirr_core::ThunderboltRouter {
+                id: "0x05AC9DB544B7AC62".into(),
+                name: "MacBook Pro".into(),
+                vendor_name: Some("Apple Inc.".into()),
+                route_string: Some("0".into()),
+                domain_uuid: None,
+                generation: None,
+                is_usb4: true,
+                security_level: None,
+                nvm_version: None,
+                depth: 0,
+                status: None,
+                receptacles: Vec::new(),
+            });
+
+        let chains = build_chains(&topo);
+        assert_eq!(chains.tb_routers.len(), 1);
+        assert!(chains.tb_routers[0].is_usb4);
     }
 
     #[test]

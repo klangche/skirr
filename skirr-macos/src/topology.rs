@@ -221,6 +221,7 @@ pub(crate) fn build(
         devices: computed,
         hubs,
         displays: Vec::new(),
+        thunderbolt_routers: Vec::new(),
         events: Vec::new(),
         platform_info,
     }

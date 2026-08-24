@@ -38,6 +38,7 @@ pub fn build(
         devices: Vec::new(),
         hubs: Vec::new(),
         displays: Vec::new(),
+        thunderbolt_routers: Vec::new(),
         events: Vec::new(),
         platform_info: empty_platform_info(),
     };

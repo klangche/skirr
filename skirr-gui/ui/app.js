@@ -167,6 +167,26 @@ async function loadTopology() {
         t.internal.map((n) => `<li>${nodeHtml(n, 0)}</li>`).join("")}</ul>`;
     }
 
+    if (t.tb_routers?.length) {
+      html += `<h3 class="internal-h">Thunderbolt / USB4</h3><ul class="tb-routers">${
+        t.tb_routers
+          .map((r) => {
+            const kind = r.is_usb4 ? "USB4" : "Thunderbolt";
+            const gen = r.generation ? ` ${r.generation}` : "";
+            const sec = r.security_level ? ` · security ${r.security_level}` : "";
+            const nvm = r.nvm_version ? ` · NVM ${esc(r.nvm_version)}` : "";
+            const recs = (r.receptacles || [])
+              .map((rec) => `<small>Receptacle ${esc(rec.id ?? "?")}: ${esc(rec.status ?? "status unknown")}${
+                rec.current_speed ? ` (${esc(rec.current_speed)})` : ""}</small>`)
+              .join("<br/>");
+            return `<li>${esc(r.name)} — <span class="ids">${esc(r.vendor_name ?? "")}</span>`
+              + ` · ${kind}${gen}${sec}${nvm} · depth ${r.depth}`
+              + (r.status ? ` · ${esc(r.status)}` : "")
+              + (recs ? `<br/>${recs}` : "") + "</li>";
+          })
+          .join("")}</ul>`;
+    }
+
     html += `<h3 class="internal-h">External — one chain per port</h3>`;
     for (const rh of t.external) {
       const portsHtml = rh.ports

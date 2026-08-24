@@ -61,6 +61,8 @@ impl UsbBackend for SkirrLinuxBackend {
             }
             attach_type_c_info(&mut topo);
             skirr_core::docks::annotate_docks(&mut topo);
+            // Best-effort like displays: no TB bus → empty list.
+            topo.thunderbolt_routers = crate::thunderbolt::collect();
             Ok(topo)
         }
         #[cfg(not(target_os = "linux"))]

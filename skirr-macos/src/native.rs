@@ -604,6 +604,39 @@ pub(crate) fn enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
     }
 }
 
+/// Thunderbolt/USB4 fabric via `system_profiler SPThunderboltDataType`.
+/// Best-effort: callers treat errors as "no routers" (Phase 10.1).
+#[cfg(target_os = "macos")]
+pub(crate) fn thunderbolt_routers() -> Result<Vec<skirr_core::ThunderboltRouter>, BackendError> {
+    let output = std::process::Command::new("system_profiler")
+        .args(["SPThunderboltDataType", "-json"])
+        .output()
+        .map_err(|e| {
+            BackendError::os_api(crate::BACKEND_NAME, format!("spawn system_profiler: {e}"))
+        })?;
+    if !output.status.success() {
+        return Err(BackendError::os_api(
+            crate::BACKEND_NAME,
+            format!(
+                "system_profiler SPThunderboltDataType exited {:?}",
+                output.status
+            ),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    skirr_core::thunderbolt::parse_system_profiler_thunderbolt(&stdout)
+        .map_err(|e| BackendError::os_api(crate::BACKEND_NAME, e))
+}
+
+/// Pure-JSON variant for tests and off-macOS compilation of the parser path.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn thunderbolt_routers() -> Result<Vec<skirr_core::ThunderboltRouter>, BackendError> {
+    Err(BackendError::unsupported(
+        crate::BACKEND_NAME,
+        "thunderbolt enumeration requires macOS",
+    ))
+}
+
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
     Err(BackendError::unsupported(

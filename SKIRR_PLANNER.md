@@ -420,11 +420,12 @@ CI must build all four artifacts on every release tag.
 ## Phase 10: P2 - Advanced Features
 
 ### 10.1 Thunderbolt/USB4 Deep Dive
-- [ ] Thunderbolt topology (separate from USB)
-- [ ] USB4 router detection
-- [ ] Bandwidth allocation analysis
-- [ ] Thunderbolt security levels
-- **Progress: 0%**
+- [x] Thunderbolt topology (separate from USB) *(new `skirr_core::thunderbolt` module + `ThunderboltRouter`/`TbReceptacle` types; `SystemTopology.thunderbolt_routers` field (`#[serde(default)]`, old reports still deserialize); macOS collector via `system_profiler SPThunderboltDataType -json` (best-effort like displays), Linux sysfs walker `/sys/bus/thunderbolt/devices`, Windows stays empty (no reliable public API — documented); rendered in CLI tree, HTML report, and GUI topology view)*
+- [x] USB4 router detection *(is_usb4 from "thunderboltusb4_bus" naming, generation strings, or Linux usb4 markers/dir names; dev host verified LIVE: all 3 Apple USB4 host routers with correct UIDs + receptacle status "Up to 40 Gb/s" — first populated-bus verification of any collector)*
+- [x] Bandwidth allocation analysis *(new `skirr_core::bandwidth::analyze_bandwidth`: per-hub uplink vs sum of children's negotiated link speeds, utilization %; ≥70% MAJOR / ≥95% CRITICAL; CLI BANDWIDTH section lists saturated hubs or "all hubs within budget"; HTML table with severity rows; documented heuristic limitation: no OS exposes active traffic)*
+- [x] Thunderbolt security levels *(macOS system_profiler exposes none — Option stays None honestly; Linux `security` attr parsed (none/user/secure/dponly/usbonly); surfaced in CLI/HTML/GUI when present)*
+- **Progress: 100%**
+- **Notes**: Parser keys handle the `_key` suffix convention observed on modern macOS plus bare names for older builds. Route-string depth: host "0"=0, "3"=1, "3.1"/"3/1"=2. 10 new tests (5 parser incl. real system_profiler fixture captured on this machine, 3 bandwidth, 2 backend wiring); workspace now 167 tests green, GUI crate 4 green. Cross-target checks pass (windows-msvc, linux-gnu).
 
 ### 10.2 Power Analysis
 - [ ] USB-PD negotiation details
@@ -488,7 +489,7 @@ CI must build all four artifacts on every release tag.
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
 | 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
 | 9 | Tauri GUI | 100% | [x] Complete (shell + all views + polish; TB/USB4 standalone panel deferred to Phase 10/11) |
-| 10 | Advanced Features (P2) | 0% | [ ] Not started |
+| 10 | Advanced Features (P2) | 25% | [~] In progress (10.1 done — TB/USB4 topology + bandwidth, live-verified) |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
 **Total Project Progress: 58%** *(phase-weighted: Phases 0–7 complete; Windows + macOS + Linux backends, CLI, release pipeline done — GUI next)*
@@ -526,15 +527,16 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 10.1 - Thunderbolt/USB4 Deep Dive
-**Action**: First P2 advanced feature. Thunderbolt is currently only a presence flag (`thunderbolt_info` on UsbDevice); this phase builds real TB topology:
-- macOS: `IOService` matching for `IOThunderboltPort`/`AppleUSB20XHCIPort` neighbors — enumerate TB switches/routers and their downstream devices; wire into a new `thunderbolt_topology()` collector on the macos backend (extend `UsbBackend` trait or add side-channel)
-- Windows: `GetThunderboltControllerCount` / WPD + registry `HKLM\SYSTEM\CurrentControlSet\Control\Thunderbolt*` where available; graceful "unsupported" otherwise
-- Linux: `/sys/bus/thunderbolt/devices` sysfs walk (deviceX, domain, unique_id, generation, nvm_version)
-- GUI/CLI: render TB chains alongside USB chains, marked with generation/security level
-- Bandwidth allocation analysis + security levels per planner checklist
-**Verify locally**: clippy/fmt/test workspace-wide; dev host has no TB devices — populated-bus checks fold into the 🟡 hardware sweep
-**Reference**: skirr-macos/src/*.rs IOKit patterns; model.rs `thunderbolt_info`/`usb4_info`; planner Phase 10.1
+**Current**: Phase 10.2 - Power Analysis
+**Action**: USB-PD negotiation details, CC state detection, cable E-marker capability, power role:
+- Extend existing PowerInfo plumbing (model.rs `PowerInfo`/`PowerDataObject`, usb_c.rs billboard path) with whatever the OS actually exposes:
+  - macOS: IORegistry keys on AppleTypeC/AppleHPM services (port data: PD contract, source caps) — probe ioreg output on dev host first; absent keys → honest None
+  - Linux: /sys/class/typec/portN (power_role, data_role, pd_revision) + partner dirs; plug/contract attrs where present
+  - Windows: graceful unsupported (no public API without vendor SDK)
+- CC state + E-marker: only where OS exposes (Linux typec `orientation`, `plug_mode`); otherwise document gap
+- Surface in CLI device table / details, HTML report power section, GUI details panel power block
+**Verify locally**: clippy/fmt/test workspace-wide; live check on dev host (internal hubs may expose some typec services); cross-target checks
+**Reference**: skirr-core/src/model.rs (PowerInfo), skirr-macos/src/usb_c.rs, skirr-linux/src/usb_c.rs; planner 10.2
 ---
-*Last updated: 2026-08-25 | Phase 9 COMPLETE: Tauri 2 GUI with all views (overview/per-port-chain topology/device-details click-through/hub port maps/displays/monitor/diagnose/report export), theme toggle, toasts, spinners, Gatekeeper guide. Note: standalone TB/USB4 panel deferred behind Phase 10 collectors.*
+*Last updated: 2026-08-25 | Phase 10.1 done: TB/USB4 router topology collected on macOS+Linux (verified LIVE on dev host's 3 USB4 buses), bandwidth analysis engine + CLI/HTML/GUI rendering. Windows TB stays empty by design.*
 ---

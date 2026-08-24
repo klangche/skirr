@@ -810,6 +810,9 @@ pub struct SystemTopology {
     pub devices: Vec<UsbDevice>,
     pub hubs: Vec<UsbDevice>,
     pub displays: Vec<DisplayInfo>,
+    /// Thunderbolt/USB4 fabric, separate from the USB device tree (Phase 10.1).
+    #[serde(default)]
+    pub thunderbolt_routers: Vec<crate::thunderbolt::ThunderboltRouter>,
     pub events: Vec<DiagnosticEvent>,
     pub platform_info: PlatformInfo,
 }

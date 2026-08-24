@@ -190,6 +190,88 @@ pub fn render_tree(topo: &SystemTopology) -> String {
         let _ = writeln!(out);
     }
 
+    // ------------------------------------------------------------------
+    // THUNDERBOLT / USB4 fabric (Phase 10.1) — separate from USB.
+    // ------------------------------------------------------------------
+    if !topo.thunderbolt_routers.is_empty() {
+        let _ = writeln!(out, "{}", "THUNDERBOLT / USB4".bold());
+        for router in &topo.thunderbolt_routers {
+            let mut line = format!("[{}] {}", router.id, router.name);
+            if let Some(vendor) = &router.vendor_name {
+                let _ = write!(line, " ({vendor})");
+            }
+            let kind = if router.is_usb4 {
+                "USB4"
+            } else {
+                "Thunderbolt"
+            };
+            match router.generation {
+                Some(gen) => {
+                    let _ = write!(line, " · {kind} {:?}", gen);
+                }
+                None => {
+                    let _ = write!(line, " · {kind}");
+                }
+            }
+            if let Some(sec) = router.security_level {
+                let _ = write!(line, " · security {sec:?}");
+            }
+            if let Some(nvm) = &router.nvm_version {
+                let _ = write!(line, " · NVM {nvm}");
+            }
+            let _ = write!(line, " · depth {}", router.depth);
+            if let Some(status) = &router.status {
+                let _ = write!(line, " · {status}");
+            }
+            let _ = writeln!(out, "{line}");
+            for rec in &router.receptacles {
+                let id = rec.id.as_deref().unwrap_or("?");
+                let status = rec.status.as_deref().unwrap_or("status unknown");
+                let speed = rec
+                    .current_speed
+                    .as_deref()
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "  Receptacle {id}: {status}{speed}");
+            }
+        }
+        let _ = writeln!(out);
+    }
+
+    // ------------------------------------------------------------------
+    // BANDWIDTH: per-hub oversubscription check (Phase 10.1).
+    // ------------------------------------------------------------------
+    let bandwidth = skirr_core::bandwidth::analyze_bandwidth(topo);
+    if !bandwidth.is_empty() {
+        let _ = writeln!(out, "{}", "BANDWIDTH".bold());
+        for hbw in &bandwidth {
+            let pct = hbw.utilization_pct.unwrap_or(0.0);
+            if hbw.severity() == skirr_core::BottleneckSeverity::Minor {
+                continue;
+            }
+            let sev = match hbw.severity() {
+                skirr_core::BottleneckSeverity::Major => "MAJOR".yellow(),
+                _ => "CRITICAL".red(),
+            };
+            let _ = writeln!(
+                out,
+                "{}: {} Mb/s uplink feeds {} Mb/s downstream ({:.0}%) {}",
+                hbw.hub_label.bold(),
+                hbw.uplink_mbps,
+                hbw.used_downstream_mbps,
+                pct,
+                sev
+            );
+        }
+        let saturated = bandwidth
+            .iter()
+            .any(|hbw| hbw.severity() != skirr_core::BottleneckSeverity::Minor);
+        if !saturated {
+            let _ = writeln!(out, "all hubs within budget");
+        }
+        let _ = writeln!(out);
+    }
+
     // Devices no controller claimed (shouldn't happen post-topology, but
     // never silently drop data from the view).
     let orphans: Vec<&UsbDevice> = topo
@@ -562,6 +644,7 @@ mod tests {
             devices: vec![hub, leaf],
             hubs: Vec::new(),
             displays: Vec::new(),
+            thunderbolt_routers: Vec::new(),
             events: Vec::new(),
             platform_info: platform(),
         }
@@ -698,6 +781,7 @@ mod tests {
             devices: Vec::new(),
             hubs: Vec::new(),
             displays: Vec::new(),
+            thunderbolt_routers: Vec::new(),
             events: Vec::new(),
             platform_info: platform(),
         };

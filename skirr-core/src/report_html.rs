@@ -70,6 +70,77 @@ pub fn render_html(report: &SkirrReport) -> String {
     push_topology_html(&mut out, topo);
     out.push_str("</section>\n");
 
+    // Thunderbolt / USB4 fabric.
+    if !topo.thunderbolt_routers.is_empty() {
+        out.push_str("<section id=\"thunderbolt\"><h2>Thunderbolt / USB4</h2><ul>");
+        for r in &topo.thunderbolt_routers {
+            let kind = if r.is_usb4 { "USB4" } else { "Thunderbolt" };
+            let gen = r
+                .generation
+                .as_ref()
+                .map(|g| format!(" {g:?}"))
+                .unwrap_or_default();
+            let sec = r
+                .security_level
+                .map(|s| format!(" · security {s:?}"))
+                .unwrap_or_default();
+            let nvm = r
+                .nvm_version
+                .as_deref()
+                .map(|v| format!(" · NVM {v}"))
+                .unwrap_or_default();
+            let _ = write!(
+                out,
+                "<li>{} — {}{kind}{gen}{sec}{nvm} · depth {}",
+                html_escape(&r.name),
+                html_escape(r.vendor_name.as_deref().unwrap_or("")),
+                r.depth,
+            );
+            if let Some(status) = &r.status {
+                let _ = write!(out, " · {}", html_escape(status));
+            }
+            for rec in &r.receptacles {
+                let _ = write!(
+                    out,
+                    "<br/><small>Receptacle {}: {}{}</small>",
+                    html_escape(rec.id.as_deref().unwrap_or("?")),
+                    html_escape(rec.status.as_deref().unwrap_or("status unknown")),
+                    rec.current_speed
+                        .as_deref()
+                        .map(|s| format!(" ({})", html_escape(s)))
+                        .unwrap_or_default(),
+                );
+            }
+            out.push_str("</li>");
+        }
+        out.push_str("</ul></section>\n");
+    }
+
+    // Hub bandwidth budget.
+    let bandwidth = crate::bandwidth::analyze_bandwidth(topo);
+    if !bandwidth.is_empty() {
+        out.push_str("<section id=\"bandwidth\"><h2>Hub bandwidth</h2><table><tr><th>Hub</th><th>Uplink</th><th>Downstream</th><th>Utilization</th></tr>");
+        for hbw in &bandwidth {
+            let class = match hbw.severity() {
+                crate::BottleneckSeverity::Critical => " class=\"sev-critical\"",
+                crate::BottleneckSeverity::Major => " class=\"sev-warning\"",
+                crate::BottleneckSeverity::Minor => "",
+            };
+            let pct = hbw
+                .utilization_pct
+                .map(|p| format!("{p:.0}%"))
+                .unwrap_or_else(|| "?".into());
+            let _ = write!(
+                out,
+                "<tr{class}><td>{}</td><td>{} Mb/s</td><td>{} Mb/s</td><td>{pct}</td></tr>",
+                html_escape(&hbw.hub_label),
+                hbw.uplink_mbps,
+                hbw.used_downstream_mbps,
+            );
+        }
+        out.push_str("</table></section>\n");
+    }
+
     // Displays.
     if !topo.displays.is_empty() {
         out.push_str("<section id=\"displays\"><h2>Displays</h2><ul>");
@@ -547,6 +618,7 @@ mod tests {
             devices: vec![hub.clone(), leaf],
             hubs: Vec::new(),
             displays: Vec::new(),
+            thunderbolt_routers: Vec::new(),
             events: Vec::new(),
             platform_info: empty_platform_info(),
         };
