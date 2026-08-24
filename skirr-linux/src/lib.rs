@@ -1,16 +1,20 @@
-//! Skirr Linux backend - sysfs/libusb/udev enumeration and hotplug monitoring.
+//! Skirr Linux backend — sysfs enumeration, topology, speeds, hotplug.
 //!
-//! Implemented in Phase 6. This stub keeps the workspace building on all platforms.
+//! Pure parsing logic (sysfs names/attrs, EDID bytes) is testable on any
+//! host; the `/sys` walks are `#[cfg(target_os = "linux")]`.
+//!
+//! Phase 6.1–6.5 complete. udev netlink push events and rusb descriptor
+//! walks are documented future enhancements; polling-diff covers the MVP.
 
-use thiserror::Error;
+pub mod backend;
+pub mod drm;
+pub mod hotplug;
+mod monitor;
+pub mod native;
+pub mod speeds;
+pub mod topology;
 
-#[derive(Debug, Error)]
-pub enum SkirrLinuxError {
-    #[error("linux backend is not implemented yet")]
-    NotImplemented,
-}
-
-pub type Result<T> = std::result::Result<T, SkirrLinuxError>;
+pub use backend::{create_backend, SkirrLinuxBackend};
 
 /// Version marker for the Linux backend.
 pub const BACKEND_NAME: &str = "skirr-linux";

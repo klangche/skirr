@@ -14,7 +14,11 @@ pub fn create_backend() -> BackendResult<Box<dyn UsbBackend>> {
     {
         Ok(Box::new(skirr_windows::create_backend()))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Box::new(skirr_linux::create_backend()))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         use skirr_core::BackendError;
         Err(BackendError::unsupported(
@@ -31,16 +35,20 @@ mod tests {
     #[test]
     fn backend_dispatch_matches_host() {
         let result = create_backend();
-        if cfg!(any(target_os = "macos", target_os = "windows")) {
+        if cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )) {
             let backend = result.expect("host platform has a backend");
-            assert_eq!(
-                backend.name(),
-                if cfg!(target_os = "macos") {
-                    "skirr-macos"
-                } else {
-                    "skirr-windows"
-                }
-            );
+            let expected = if cfg!(target_os = "macos") {
+                "skirr-macos"
+            } else if cfg!(target_os = "windows") {
+                "skirr-windows"
+            } else {
+                "skirr-linux"
+            };
+            assert_eq!(backend.name(), expected);
         } else {
             assert!(result.is_err());
         }

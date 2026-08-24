@@ -2,7 +2,7 @@
 name = "skirr-linux"
 version = "0.1.0"
 edition = "2021"
-description = "Linux backend for Skirr using sysfs, libusb, and udev"
+description = "Linux backend for Skirr using sysfs"
 license = "MIT"
 repository = "https://github.com/klangche/skirr"
 
@@ -11,13 +11,8 @@ skirr-core = { path = "../skirr-core" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
-bitflags = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libudev = { workspace = true }
-nix = { workspace = true }
-drm = { workspace = true }
-rusb = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

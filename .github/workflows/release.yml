@@ -1,8 +1,11 @@
 name: Release
 
+# Tag-triggered release builds. Runs even while CI's automatic triggers are
+# paused: cutting a release is always a deliberate manual act.
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
 
 permissions:
   contents: write
@@ -12,22 +15,24 @@ env:
 
 jobs:
   build:
+    name: ${{ matrix.artifact }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: skirr-windows-x64.exe
+            artifact: skirr-windows-x64
+          # macos-14 runners are Apple Silicon; macos-13 are Intel.
           - os: macos-14
             target: aarch64-apple-darwin
-            artifact: skirr-macos-arm64.dmg
+            artifact: skirr-macos-arm64
           - os: macos-13
             target: x86_64-apple-darwin
-            artifact: skirr-macos-x64.dmg
+            artifact: skirr-macos-x64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact: skirr-linux-amd64.deb
+            artifact: skirr-linux-amd64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,70 +40,114 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
-      - name: Build CLI (release)
-        run: cargo build --release --target ${{ matrix.target }} -p skirr-cli
+      - name: Build (release)
+        run: cargo build --release -p skirr-cli --target ${{ matrix.target }}
 
-      - name: Package Windows portable .exe
+      - name: Package (Windows portable .zip)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item "target/${{ matrix.target }}/release/skirr.exe" "${{ matrix.artifact }}"
-          Get-FileHash "${{ matrix.artifact }}" -Algorithm SHA256 | Out-File "${{ matrix.artifact }}.sha256"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/skirr.exe dist/
+          Compress-Archive -Path dist/skirr.exe -DestinationPath ${{ matrix.artifact }}.zip
+          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Out-File ${{ matrix.artifact }}.zip.sha256
 
-      - name: Package macOS .dmg
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          STAGING="Skirr"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/skirr" "$STAGING/"
-          printf 'Run Skirr from Terminal:\n\n  ./skirr --help\n\nmacOS may block unsigned binaries:\nSystem Settings -> Privacy & Security -> Open Anyway.\n' > "$STAGING/README.txt"
-          hdiutil create -volname Skirr -srcfolder "$STAGING" -ov -format UDZO "${{ matrix.artifact }}"
-          shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./target/${{ matrix.target }}/release/skirr.exe --help
 
-      - name: Package Linux .deb
-        if: runner.os == 'Linux'
-        shell: bash
+      - name: Package (macOS .app -> .dmg)
+        if: runner.os == 'MacOS'
         run: |
-          mkdir -p pkg/DEBIAN pkg/usr/bin
-          cp "target/${{ matrix.target }}/release/skirr" pkg/usr/bin/
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          cat > pkg/DEBIAN/control <<EOF
+          APP="Skirr.app"
+          mkdir -p "dist/$APP/Contents/MacOS" "dist/dmg-staging"
+          cp "target/${{ matrix.target }}/release/skirr" "dist/$APP/Contents/MacOS/skirr"
+          cat > "dist/$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Skirr</string>
+            <key>CFBundleIdentifier</key><string>io.github.klangche.skirr</string>
+            <key>CFBundleExecutable</key><string>skirr</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          # Unsigned builds must be ad-hoc signed or arm64 macOS refuses to run.
+          codesign --force --deep -s - "dist/$APP"
+          # Smoke test before shipping the bundle.
+          "./dist/$APP/Contents/MacOS/skirr" --help > /dev/null
+          cp -R "dist/$APP" dist/dmg-staging/
+          ln -s /Applications dist/dmg-staging/Applications
+          cat > dist/dmg-staging/HOW\ TO\ RUN.txt <<NOTE
+          Skirr ${GITHUB_REF_NAME} (macOS)
+
+          1. Drag Skirr.app into the Applications folder.
+          2. First launch only: right-click Skirr.app and choose "Open",
+             then confirm ("Open Anyway"). This is Gatekeeper, because the
+             binary is not notarized yet.
+          3. Or run the CLI directly from Terminal:
+                /Applications/Skirr.app/Contents/MacOS/skirr --help
+          NOTE
+          hdiutil create -volname "Skirr ${VERSION}" -srcfolder dist/dmg-staging \
+            -format UDZO -ov "${{ matrix.artifact }}.dmg"
+          shasum -a 256 "${{ matrix.artifact }}.dmg" > "${{ matrix.artifact }}.dmg.sha256"
+
+      - name: Package (Linux .deb)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGING="dist/skirr_${VERSION}_amd64"
+          mkdir -p "$STAGING/DEBIAN" "$STAGING/usr/bin"
+          install -m 755 "target/${{ matrix.target }}/release/skirr" "$STAGING/usr/bin/skirr"
+          cat > "$STAGING/DEBIAN/control" <<CONTROL
           Package: skirr
           Version: ${VERSION}
           Section: utils
           Priority: optional
           Architecture: amd64
-          Maintainer: Skirr <noreply@github.com>
-          Description: Cross-platform USB analysis tool
-           Scans connected USB devices, builds the hierarchical USB tree,
-           and diagnoses chain-length stability issues.
-          EOF
-          dpkg-deb --build pkg "${{ matrix.artifact }}"
-          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          Maintainer: klangche <skirr@klangche.io>
+          Description: Cross-platform USB analysis and diagnostic tool
+           Enumerates USB devices, reconstructs bus topology, detects speed
+           mismatches, monitors hotplug events, and diagnoses stability
+           issues using rule-based analysis.
+          CONTROL
+          # Smoke test before packing.
+          "$STAGING/usr/bin/skirr" --help > /dev/null
+          dpkg-deb --build "$STAGING"
+          mv "skirr_${VERSION}_amd64.deb" "${{ matrix.artifact }}.deb"
+          sha256sum "${{ matrix.artifact }}.deb" > "${{ matrix.artifact }}.deb.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
-            ${{ matrix.artifact }}
-            ${{ matrix.artifact }}.sha256
+            *.zip
+            *.zip.sha256
+            *.dmg
+            *.dmg.sha256
+            *.deb
+            *.deb.sha256
+          if-no-files-found: error
 
   release:
     needs: build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+          path: dist
+      - name: Attach artifacts to release
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            *.exe
-            *.dmg
-            *.deb
-            *.sha256
+          files: dist/*
+          generate_release_notes: true
