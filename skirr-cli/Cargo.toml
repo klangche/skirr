@@ -12,9 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 skirr-core = { path = "../skirr-core" }
-skirr-windows = { path = "../skirr-windows", optional = true }
-skirr-macos = { path = "../skirr-macos", optional = true }
-skirr-linux = { path = "../skirr-linux", optional = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
@@ -23,6 +20,8 @@ tabled = { workspace = true }
 indicatif = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 tokio = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

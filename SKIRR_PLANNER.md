@@ -206,22 +206,25 @@ CI must build all four artifacts on every release tag.
 ## Phase 4: MVP - CLI (skirr-cli)
 
 ### 4.1 Command Structure
-- [ ] `skirr scan` - full enumeration output
-- [ ] `skirr usb` - USB devices only
-- [ ] `skirr topology` - tree view with hops/tiers
-- [ ] `skirr hubs` - hub details with port mapping
-- [ ] `skirr ports` - port-level details
-- [ ] `skirr diagnose` - run rule engine, show verdict
-- [ ] `skirr monitor` - live hotplug monitoring
-- [ ] `skirr report` - generate JSON/HTML report
+- [x] `skirr scan` - full enumeration output
+- [x] `skirr usb` - USB devices only
+- [x] `skirr topology` - tree view with hops/tiers
+- [x] `skirr hubs` - hub details with port mapping
+- [x] `skirr ports` - port-level details
+- [x] `skirr diagnose` - run rule engine, show verdict
+- [x] `skirr monitor` - live hotplug monitoring
+- [x] `skirr report` - generate JSON/HTML report
+- **Progress: 100%**
+- **Notes**: All 8 commands wired to real backends. Backend dispatch via target-gated deps in `skirr-cli/src/backend.rs` (`cfg(target_os=...)` — each binary carries only its own platform backend; unsupported hosts get clean `Unsupported` error). `load_topology()` enriches devices with a second enumeration pass for speed data (failures non-fatal). Display logic lives in pure-fn module `render.rs` (device table, ASCII tree via parent/root-hub attribution, hub port maps, flat port occupancy list) — 4 unit tests incl. synthetic controller→roothub→hub→leaf fixture. Diagnose exits 1 on `Verdict::Fail`, 2 on backend error — script-friendly. Monitor loops `poll_event(500ms)` until Ctrl-C. Report writes JSON `{tool, generated, platform, topology, diagnosis}` (HTML deferred to Phase 5 per plan). `--json` global flag on all display/diagnose commands. Live smoke test on dev host: all commands exit 0 against empty-but-valid topology. 85 tests workspace-wide.
 - **Progress: 0%**
 
 ### 4.2 Output Formatting
-- [ ] Human-readable table output
-- [ ] JSON output (--json flag)
-- [ ] Structured diagnostic output (FACT/RULE/VERDICT)
-- [ ] Color-coded PASS/WARNING/FAIL
-- **Progress: 0%**
+- [x] Human-readable table output
+- [x] JSON output (--json flag)
+- [x] Structured diagnostic output (FACT/RULE/VERDICT)
+- [x] Color-coded PASS/WARNING/FAIL
+- **Progress: 100%**
+- **Notes**: Rendering fully refactored to pure data-in/String-out fns in `render.rs` (7 tests). Device table now `tabled` (Style::blank, Tabled derive row struct). New `format_diagnosis()` renders Shoko-style FACT/RULE/VERDICT plus BOTTLENECKS (severity-colored Minor/Major/Critical), ISSUES (topology/display/USBC/power), and RECOMMENDATIONS sections; empty sections omitted (tested). Verdict tags color-coded via `colored` — PASS green / WARNING yellow / FAIL red+bold / UNKNOWN dim; auto-disables under NO_COLOR and non-TTY (tests force-disable for plain-text assertions). Tree marks hubs bold. `--json` verified on scan/usb/topology/hubs/ports/diagnose. Spinner skipped: enumeration is fast (<200 ms) and headless-safety outweighs polish — revisit only if a backend gets slow.
 
 ### 4.3 CLI Integration
 - [ ] Backend selection (auto-detect OS)
@@ -449,7 +452,7 @@ CI must build all four artifacts on every release tag.
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
 | 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
 | 3 | macOS Backend | 100% | [x] Completed (dev-host live-tested; hardware sweep pending) |
-| 4 | CLI | 0% | [ ] Not started |
+| 4 | CLI | 50% | [~] In progress (4.1–4.2 done) |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
 | 6 | Linux Backend | 0% | [ ] Not started |
 | 7 | USB-C & Display Diagnostics | 0% | [ ] Not started |
@@ -493,20 +496,14 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 4.1 - Command Structure (skirr-cli)
-**Action**: Build the CLI surface wiring backends into commands (clap derive already a workspace dep):
-- `skirr scan` — full enumeration output (all USB devices, table)
-- `skirr usb` — USB devices only (subset of scan; keep both per plan)
-- `skirr topology` — tree view with hops/tiers (ASCII tree from SystemTopology: controllers → root hubs → devices, indent by tier)
-- `skirr hubs` — hub details with port mapping
-- `skirr ports` — port-level details
-- `skirr diagnose` — run rule engine (`RuleEngine::evaluate`) + `format_report`, show verdict
-- `skirr monitor` — live hotplug monitoring (poll_event loop, print events; Ctrl-C to exit)
-- `skirr report` — generate JSON/HTML report (JSON via serde; HTML can be minimal placeholder until Phase 5)
-- Backend selection: platform-gated — macOS host uses skirr-macos::create_backend(), Windows uses skirr-windows::create_backend(), else error cleanly. Feature-gate the backend crates so cross-compiling the CLI doesn't drag every backend in
-- Global flags worth adding now: `--json` for machine-readable output on scan/usb/topology/diagnose
-- Keep all commands compiling/behaving sanely off any supported OS (clean Unsupported errors)
-**Verify locally**: cargo test/clippy on macOS must pass — CLI is fully run-testable here end-to-end (scan/topology/diagnose against live IOKit data even if empty)
-**Reference**: skirr-core/src/rule_engine.rs format_report; backend trait surface; Shoko main_cli.py command naming
+**Current**: Phase 4.3 - CLI Integration
+**Action**: Harden the CLI plumbing (commands + formatting already work):
+- Profile selection: `--profile <path>` flag loading a custom JSON Profile via serde (Profile is Deserialize); default stays standard_v1. Validate and error cleanly on bad files
+- Exit codes: document/centralize (0 ok, 1 diagnose-Fail, 2 backend/error) in `--help` epilogue
+- Config file support if Shoko has it (~/.skirrrc or similar — check Shoko main_cli.py; keep minimal, only adopt what Shoko actually does)
+- Signal handling on monitor: graceful stop_monitoring() on SIGINT/SIGTERM instead of hard kill (tokio::signal or ctrlc-style handler; keep sync loop)
+- Error UX: map BackendError variants to friendly stderr messages + hint (e.g. PermissionDenied → suggest sudo / replug)
+**Verify locally**: cargo test/clippy pass; exercise --profile with a hand-written profile JSON; kill monitor with Ctrl-C and confirm clean exit path
+**Reference**: skirr-core/src/profile.rs; Shoko config handling
 ---
-*Last updated: 2026-08-24 | Phase 3 COMPLETE (both MVP backends done); next agent: Phase 4.1*
+*Last updated: 2026-08-24 | Phase 4.2 done (tabled table, colored diagnosis, pure renderers); next agent: Phase 4.3*
