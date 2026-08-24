@@ -176,10 +176,12 @@ CI must build all four artifacts on every release tag.
 - **Progress: 0%**
 
 ### 3.2 Topology Construction
-- [ ] Build parent/child relationships via IORegistry
-- [ ] Identify host controllers and root hubs
-- [ ] Map hub ports to children
-- [ ] Calculate depth, hops, tiers per device
+- [x] Build parent/child relationships via IORegistry
+- [x] Identify host controllers and root hubs
+- [x] Map hub ports to children
+- [x] Calculate depth, hops, tiers per device
+- **Progress: 100%**
+- **Notes**: New `topology.rs` (pure, testable everywhere; mirrors skirr-windows structure). Parent linking via the `parent` instance strings both collectors already emit. **Port decoding**: locationID nibbles from MSB = path down the tree with FIRST nibble = bus domain (not a port) — `port_from_location(child, parent)` finds the first zero-nibble position in the parent's path and reads the child's nibble there; direct attachments skip the bus nibble (position 6). **Documented deviation**: Apple Silicon exposes no explicit root-hub device records → each bus synthesizes a HostController (`USB_BUS_{n}`, keyed by root nibble of locationID) + RootHub (`ROOT_HUB\BUS_{n}`); tier-1 attachments become root-hub children and set port_count. Hops count real hub-device ancestors only; tier = hops+1 per rule-engine semantics. Distinct root nibbles never merge into one bus (tested). Empty enumeration builds a valid empty skeleton. 5 new tests (18 total in crate), green on macOS dev host. ⚠️ Same live caveat as 3.1: no physical USB devices attached during verification — port-decoding semantics verified against documented Apple layout + unit tests; re-check with hardware before release sweep.
 - **Progress: 0%**
 
 ### 3.3 USB Speed Detection
@@ -441,7 +443,7 @@ CI must build all four artifacts on every release tag.
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
 | 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
-| 3 | macOS Backend | 25% | [~] In progress (3.1 done, live-tested on dev host) |
+| 3 | macOS Backend | 50% | [~] In progress (3.1–3.2 done, live-tested on dev host) |
 | 4 | CLI | 0% | [ ] Not started |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
 | 6 | Linux Backend | 0% | [ ] Not started |
@@ -486,14 +488,14 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 3.2 - Topology Construction (skirr-macos)
-**Action**: Build parent/child topology from the raw records behind `#[cfg(target_os = "macos")]`:
-- Records already carry `parent` (instance string) from both collectors — link parents/children by instance ID, compute hops/tiers/depth, port attribution
-- Port number: derive from locationID deltas? NO — locationID encodes the full path: each nibble level is a port number up the hub chain (`0x14`<b>`3`</b>`0000`: port 3 at level 2). Parse trailing non-zero nibbles of the child's locationID vs its parent's to extract the immediate port — pure fn + tests off-macOS
-- Identify host controllers: records with `parent == None` that are root-hub-adjacent; Apple controllers appear as the top of each tree. Root hubs on modern Apple Silicon are often invisible in IOUSBDevice matching — if no explicit root-hub records exist, synthesize RootHub entries per controller tree (document deviation in code comment)
-- Fill `SystemTopology` (host_controllers, root_hubs, devices with parent_id/children_ids/port_number); wire `get_topology()` in backend.rs replacing the Unsupported stub
-- Mirror skirr-windows/src/topology.rs structure closely — same semantics as rule engine expects (hops = ancestor hub count, tiers = hops+1)
-**Verify locally**: cargo test/clippy on macOS must pass; this phase IS run-testable on the dev host once any USB device is plugged in — note in handoff whether a device was available
-**Reference**: DATA_MAP.md §2/§3 topology columns; skirr-windows/src/topology.rs as structural template
+**Current**: Phase 3.3 - USB Speed Detection (skirr-macos)
+**Action**: Implement per-device speed reporting behind `#[cfg(target_os = "macos")]`:
+- IORegistry route: devices expose negotiated speed via the `Speed` property (IOUSBHostDevice: kUSBDeviceSpeedLow/Full/High/Super/SuperPlus coded as integers 0-4) and sometimes `kUSBSerialNumberString`-adjacent `Device Speed` keys; read in the SAME IOKit pass from 3.1 (extend `collect_entry`) — do NOT re-enumerate
+- system_profiler fallback: `"speed"` string field ("Up to 480 Mb/s" etc.) — ⚠️ that is ADVERTISED max, not negotiated; parse into max_supported only (DATA_MAP §4 warning)
+- Map Mbps values (1.5/12/480/5000/10000/20000) → core UsbSpeed enum; write pure mapping fn + tests off-macOS
+- Wire `get_speeds(device_id)` in backend.rs: build topology snapshot, locate device by id, return SpeedReport with max_supported vs current_link + bottleneck (mirror skirr-windows speeds_for_device flow)
+- Keep non-macOS builds green (Unsupported elsewhere)
+**Verify locally**: cargo test/clippy on macOS must pass; live speed data requires a device attached — note availability in handoff
+**Reference**: DATA_MAP.md §4 speeds column (macOS row), §12 limits; skirr-windows/src/speeds.rs for report-flow template
 ---
-*Last updated: 2026-08-24 | Phase 3.1 done (live smoke test passed; no devices attached on dev host during verification); next agent: Phase 3.2*
+*Last updated: 2026-08-24 | Phase 3.2 done (pure builder fully tested; hardware caveat noted); next agent: Phase 3.3*

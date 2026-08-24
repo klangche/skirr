@@ -31,10 +31,19 @@ impl UsbBackend for SkirrMacosBackend {
     }
 
     fn get_topology(&self) -> BackendResult<SystemTopology> {
-        Err(BackendError::unsupported(
-            self.name(),
-            "topology construction lands in Phase 3.2",
-        ))
+        #[cfg(target_os = "macos")]
+        {
+            let raw = native::enumerate()?;
+            let info = platform_info_impl()?;
+            Ok(crate::topology::build(&raw, info, chrono::Utc::now()))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(BackendError::unsupported(
+                self.name(),
+                "topology requires macOS",
+            ))
+        }
     }
 
     fn get_speeds(&self, _device_id: Uuid) -> BackendResult<SpeedReport> {
