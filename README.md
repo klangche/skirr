@@ -75,8 +75,7 @@ Grab the artifact for your platform from the latest release:
 | OS | Arch | Artifact |
 |----|------|----------|
 | Windows | x64 | `.zip` (`skirr.exe`) |
-| macOS | ARM64 (Apple Silicon) | `.dmg` (`Skirr.app`) |
-| macOS | x64 (Intel) | `.dmg` (`Skirr.app`) |
+| macOS | Universal (Apple Silicon + Intel) | `.dmg` (`Skirr.app`) |
 | Ubuntu 22.04 | x86_64 | `.deb` (`/usr/bin/skirr`) |
 
 Each artifact ships with a SHA-256 checksum file.

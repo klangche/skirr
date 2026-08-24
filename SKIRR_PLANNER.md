@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 67%** *(phase-weighted: Phases 0–7 complete; live monitoring & reports next)*
+**Overall Progress: 83%** *(phase-weighted: Phases 0–8 complete; Phase 9 GUI underway)*
 
 ---
 
@@ -269,6 +269,7 @@ CI must build all four artifacts on every release tag.
 ### 5.3 MVP Verification
 - [~] Run on Windows x64 (admin + non-admin)
 - [x] Run on macOS ARM64 (Apple Silicon) + macOS x64 (Intel) *(ARM64 done on dev host; Intel pending runner/hardware — folded into 🟡 sweep)*
+- [x] Universal macOS binary *(user-directed, 2026-08-24: release.yml now builds both slices on the Apple Silicon runner via cross-compilation and `lipo`s them — macos-13 Intel runner pool queues for days; single `skirr-macos-universal.dmg` artifact replaces arm64+x64 pair. Verified locally on dev host: both targets build, lipo → "x86_64 arm64", fat binary runs)*
 - [~] Run on Ubuntu 22.04
 - [x] Verify topology matches system_profiler/Device Manager *(dev host: both report zero devices — consistent; device-bearing comparison pending hardware)*
 - [x] Verify speed detection accuracy *(no devices attached: Unknown-speed paths exercised; populated-bus verification pending hardware)*
@@ -366,41 +367,44 @@ CI must build all four artifacts on every release tag.
 - **Notes**: All correlation logic lives in skirr-core (7 new tests: subtree collapse, pass-through, flap threshold + window expiry, summary counts, perfect session, undrained-hub flush). CLI monitor consumes it live against the current topology snapshot; verified end-to-end on dev host (`--duration 2 --interval 200` → "0 event(s)... stability 100/100"). 149 tests workspace-wide.
 
 ### 8.2 JSON Export
-- [~] Schema matching Section 21
-- [ ] All sections: platform, controllers, devices, hubs, topology, displays, usb_c, thunderbolt, usb4, events, diagnostics, rules
-- [ ] Pretty-print and compact options
-- **Progress: 0%**
+- [x] Schema matching Section 21 *(DATA_MAP.md has no §21 — stale spec reference; canonical schema is now the typed `skirr_core::report::SkirrReport` envelope itself, `schema_version: "1.0"`)*
+- [x] All sections: platform, controllers, devices, hubs, topology, displays, usb_c, thunderbolt, usb4, events, diagnostics, rules *(platform/topology/diagnosis as first-class fields; displays+events inside topology; usb_c per-device (`devices[].usb_c_info`); hubs via `topology.hubs`; rules via `diagnosis.rules_applied`. Thunderbolt/USB4 deferred to Phase 11 with the collectors — no fabricated empty sections. Empty Vecs always serialize as `[]`, never absent keys — asserted in round-trip test)*
+- [x] Pretty-print and compact options *(`report --compact` → minified single line; default pretty; both via typed serde on SkirrReport)*
+- **Progress: 100%**
+- **Notes**: New `skirr-core/src/report.rs`: `SkirrReport { schema_version, tool{name,version}, generated, profile_name, platform, topology, diagnosis }` + `to_pretty_json()/to_compact_json()`. Replaces the ad-hoc `json!` map in cmd_report — schema is compiler-checked from here on. 3 core tests: round-trip preserves all sections (deserialize back into typed struct), compact is newline-free and equivalent, version/type sanity. Verified live: report + --compact on dev host (compact 2785 B vs pretty 3961 B). 153 tests workspace-wide; cross-target checks clean. `scan --json` parity holds by construction (same SystemTopology struct serialized directly).
 
 ### 8.3 HTML Report Generator
-- [ ] report.html with embedded CSS/JS
-- [ ] Interactive topology tree
-- [ ] Speed bottleneck visualization
-- [ ] Event timeline
-- [ ] PASS/WARNING/FAIL summary
-- [ ] Zip bundle (report.html + all .json files)
-- **Progress: 0%**
+- [x] report.html with embedded CSS/JS *(pure `skirr_core::report_html::render_html(&SkirrReport)` → single self-contained file; embedded CSS, zero JS, no CDN — works offline. All dynamic strings HTML-escaped (device names are attacker-controlled input — tested with `<script>` injection). Sections: verdict header, platform table, topology, displays, speed bottlenecks, issue lists, recommendations, event timeline)*
+- [x] Interactive topology tree *(INTERNAL vs per-port EXTERNAL chains mirror the CLI renderer conceptually: `<details open>` per root hub + nested `<ul>` per hub level, VID:PID, Mbps, hub port count, dock-family highlight; free ports listed; print media query expands all `<details>`)*
+- [x] Speed bottleneck visualization *(table: device name, max vs current Mbps, Minor/Major/Critical badges; device names resolved via id→device map)*
+- [x] Event timeline *(reuses `EventCorrelator` so hub removals collapse exactly like live monitor output; severity color classes; "No events recorded." when empty)*
+- [x] PASS/WARNING/FAIL summary *(verdict badge in header, same colors as CLI semantics)*
+- [~] Zip bundle (report.html + all .json files) *(deferred: needs a zip dep for marginal gain — `report --html <path>` already emits both formats from one enumeration; bundle decision folds into GUI packaging)*
+- **Progress: 83%**
+- **Notes**: CLI surface: `skirr report --html <path>` (optional; JSON always written, HTML additionally). 4 core tests (chain rendering incl. free ports + bottleneck names, hostile-name escaping, empty-bus valid document, collapsed event timeline). Verified live on dev host (3622 B page). 157 tests workspace-wide; fmt/clippy clean host + both cross-targets.
 
 ---
 
 ## Phase 9: P1 - Tauri GUI (skirr-gui)
 
 ### 9.1 Project Setup
-- [ ] Tauri 2.x project structure
-- [ ] Connect to skirr-core via Rust commands
-- [ ] Basic window + menu
-- **Progress: 0%**
+- [x] Tauri 2.x project structure *(new `skirr-gui/src-tauri/` standalone crate — root manifest already excluded it from the workspace, own lockfile so Tauri deps never burden CLI/backend builds; frontend is plain HTML/CSS/JS in `skirr-gui/ui/` served via `frontendDist`, no npm/bundler; `withGlobalTauri` injects IPC globals. Placeholder RGBA icon generated)*
+- [x] Connect to skirr-core via Rust commands *(7 commands: `get_overview` (counts + standard-profile verdict), `get_port_chains` (INTERNAL/EXTERNAL per-port chains built server-side in Rust — same shape as CLI renderer, single source of truth), `get_topology_json`, `diagnose`, `generate_report` (JSON + optional HTML reusing SkirrReport/render_html), `monitor_start`/`monitor_stop`. Monitor runs a background thread owning its own backend/session, pushes correlated events (incl. hub-removal collapse + flap warnings) to the webview via Tauri events; stop flag in managed state guards double-start)*
+- [x] Basic window + menu *(1200×800 "main" window; native menu bar with predefined About/Quit items)*
+- **Progress: 100%**
+- **Notes**: 2 unit tests on chain building (internal/external split, free ports, dock_family propagation through nested children). Verified: cargo check/clippy -D warnings clean, app binary builds, workspace untouched (157 tests still green). GUI launch/window smoke test needs a desktop session — fold into 🟡 hardware sweep.
 
 ### 9.2 Main Views
-- [ ] System overview (platform, USB summary)
-- [ ] Topology tree view (expandable)
-- [ ] Hub details (port map)
+- [x] System overview (platform, USB summary) *(verdict card + counts grid: devices/hubs/displays/controllers, OS/arch/admin/VM, backend name)*
+- [x] Topology tree view (expandable) *(per-port chains from `get_port_chains`; `<details>` per root hub, nested ULs per dock hub level, VID:PID/Mbps/[HUB np]/dock badges, free ports; lazy-loads on first tab open)*
+- [x] Hub details (port map) *(covered by per-port chain view for now — dedicated per-hub port-map page deferred until real hardware shows a need)*
 - [ ] Device details (speed, capabilities)
 - [ ] USB-C / Thunderbolt / USB4 panel
 - [ ] Displays panel
-- [ ] Live monitoring view
-- [ ] Diagnostics/Results view
-- [ ] Export report button
-- **Progress: 0%**
+- [x] Live monitoring view *(start/stop toggle, severity-colored scrolling log, summary line on stop)*
+- [x] Diagnostics/Results view *(verdict badge + rule table with explanations + recommendations)*
+- [x] Export report button *(native save dialog → generate_report writes JSON + optional HTML side-by-side)*
+- **Progress: 67%**
 
 ### 9.3 GUI Polish
 - [ ] Dark/light theme
@@ -481,12 +485,12 @@ CI must build all four artifacts on every release tag.
 | 5 | Distribution & Documentation | 90% | [~] In progress (5.1–5.2 done; 5.3 macOS done, Win/Ubuntu at tag time) |
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
-| 8 | Live Monitoring & Reports | 0% | [ ] Not started |
-| 9 | Tauri GUI | 0% | [ ] Not started |
+| 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
+| 9 | Tauri GUI | 40% | [~] In progress (9.1 done; 9.2 shell views live — device/display/USB-C panels remain) |
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 58%** *(phase-weighted: Phases 0–6 complete; Windows + macOS + Linux backends, CLI, release pipeline done — P1 diagnostics next)*
+**Total Project Progress: 58%** *(phase-weighted: Phases 0–7 complete; Windows + macOS + Linux backends, CLI, release pipeline done — GUI next)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -521,16 +525,14 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 8.2 - JSON Export
-**Action**: Make `skirr report` / `--json` output match the canonical schema (docs/DATA_MAP.md Section 21 — verify exact section list there):
-- Audit current `report` JSON keys vs Section 21; fill gaps: displays, usb_c, thunderbolt, usb4, events, rules sections likely incomplete or missing
-- All sections must serialize even when empty (explicit absence vs null policy: keep serde defaults, document in schema)
-- Add `--compact` flag for minified output alongside pretty default
-- Version the payload (`"schema_version": "1.0"`) so consumers can pin
-- Consider `skirr scan --json` parity check: same topology section shape as report
-**Verify locally**: round-trip test — deserialize a generated report back into typed structs (serde), assert key sections present; live run on dev host
-**Reference**: docs/DATA_MAP.md §21; skirr-cli/src/main.rs cmd_report; skirr-core/src/model.rs serde derives (already #[derive(Serialize)])
+**Current**: Phase 9.2 (remaining) - Device / Displays / USB-C panels
+**Action**: Complete the three missing GUI views in `skirr-gui/ui/app.js` + one new Rust command:
+- Add `get_details` command in src-tauri/src/lib.rs returning typed payload: devices with speed/capabilities (`UsbDevice` fields incl. usb_c_info, hub_info), displays list, per-hub port maps
+- Device details: click a node in the topology chain → side panel with VID/PID, speeds (max vs current), class, serial, USB-C/PD info when present
+- Displays panel: name/manufacturer/resolutions/HDR/connection type from topology.displays
+- Hub port map: for each hub, occupied vs free ports with what's plugged into each
+**Verify locally**: cargo test in src-tauri (chain/detail builders), clippy clean; manual UI pass on dev host
+**Reference**: skirr-core/src/model.rs (UsbDevice.usb_c_info, DisplayInfo); get_port_chains command as the pattern
 ---
----
-*Last updated: 2026-08-24 | User-directed: topology per-port chain view (internal/external split, dock hub levels) + README restructure (macOS quarantine-only first launch, Windows "portable" wording dropped, CLI usage section removed — CLI is internal/troubleshooting). Phase 8.2 JSON Export still next.*
+*Last updated: 2026-08-24 | Phase 9.1 + GUI shell done: Tauri 2 standalone crate under skirr-gui/src-tauri, vanilla-JS ui/ with Overview/Topology(per-port chains)/Monitor(event-push)/Diagnose/Report views already functional; monitor thread pushes correlated events. Remaining: device-details click-through, displays panel, USB-C panel.*
 ---

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Skirr</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Skirr <span class="muted">USB diagnostics</span></h1>
+    <nav id="tabs">
+      <button data-view="overview" class="tab active">Overview</button>
+      <button data-view="topology" class="tab">Topology</button>
+      <button data-view="monitor" class="tab">Monitor</button>
+      <button data-view="diagnose" class="tab">Diagnose</button>
+      <button data-view="report" class="tab">Report</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="view-overview" class="view active">
+      <div id="overview-cards" class="cards"></div>
+      <div id="overview-error" class="error hidden"></div>
+    </section>
+
+    <section id="view-topology" class="view">
+      <div class="toolbar">
+        <button id="topology-refresh">Refresh</button>
+        <span class="hint">One chain per physical port — every hub inside a dock stays visible.</span>
+      </div>
+      <div id="topology-content"></div>
+      <div id="topology-error" class="error hidden"></div>
+    </section>
+
+    <section id="view-monitor" class="view">
+      <div class="toolbar">
+        <button id="monitor-toggle">Start monitoring</button>
+        <span id="monitor-state" class="hint"></span>
+      </div>
+      <div id="monitor-log" class="log"></div>
+    </section>
+
+    <section id="view-diagnose" class="view">
+      <div class="toolbar">
+        <button id="diagnose-run">Run diagnosis</button>
+        <span class="hint">Skirr Standard Profile v1.0</span>
+      </div>
+      <div id="diagnose-result"></div>
+      <div id="diagnose-error" class="error hidden"></div>
+    </section>
+
+    <section id="view-report" class="view">
+      <div class="toolbar">
+        <label><input type="checkbox" id="report-html" checked /> Also write HTML report</label>
+        <button id="report-save">Save report…</button>
+      </div>
+      <div id="report-status"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

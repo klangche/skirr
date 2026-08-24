@@ -60,6 +60,12 @@ enum Command {
         /// Output path (default: ./skirr-report.json)
         #[arg(short, long, default_value = "skirr-report.json")]
         out: std::path::PathBuf,
+        /// Minified single-line JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+        /// Also write a self-contained HTML report to this path
+        #[arg(long)]
+        html: Option<std::path::PathBuf>,
     },
 }
 
@@ -86,7 +92,9 @@ fn run(cli: Cli) -> Result<ExitCode, BackendError> {
         Command::Ports => cmd_ports(&*backend, cli.json)?,
         Command::Diagnose => return cmd_diagnose(&*backend, cli.json, &profile),
         Command::Monitor { duration, interval } => cmd_monitor(&*backend, duration, interval)?,
-        Command::Report { out } => cmd_report(&*backend, &out, &profile)?,
+        Command::Report { out, compact, html } => {
+            cmd_report(&*backend, &out, &profile, compact, html)?
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -341,21 +349,38 @@ fn cmd_monitor(
     Ok(())
 }
 
-fn cmd_report(backend: &dyn UsbBackend, out: &Path, profile: &Profile) -> BackendResult<()> {
+fn cmd_report(
+    backend: &dyn UsbBackend,
+    out: &Path,
+    profile: &Profile,
+    compact: bool,
+    html: Option<PathBuf>,
+) -> BackendResult<()> {
     let topo = backend.get_topology()?;
     let diagnosis = RuleEngine::new(profile.clone()).evaluate(&topo);
 
-    let report = serde_json::json!({
-        "tool": "skirr",
-        "generated": chrono::Utc::now().to_rfc3339(),
-        "profile": profile.name,
-        "platform": topo.platform_info,
-        "topology": topo,
-        "diagnosis": diagnosis,
-    });
-    let body = serde_json::to_string_pretty(&report).map_err(json_err)?;
+    let report = skirr_core::report::SkirrReport::new(
+        profile.name.clone(),
+        topo.platform_info.clone(),
+        topo,
+        diagnosis,
+    );
+    let body = if compact {
+        report.to_compact_json()
+    } else {
+        report.to_pretty_json()
+    }
+    .map_err(json_err)?;
     std::fs::write(out, body)
         .map_err(|e| BackendError::os_api("skirr-cli", format!("write {}: {e}", out.display())))?;
+
+    if let Some(html_path) = html {
+        let page = skirr_core::report_html::render_html(&report);
+        std::fs::write(&html_path, page).map_err(|e| {
+            BackendError::os_api("skirr-cli", format!("write {}: {e}", html_path.display()))
+        })?;
+        println!("HTML report written to {}", html_path.display());
+    }
     println!("Report written to {}", out.display());
     Ok(())
 }

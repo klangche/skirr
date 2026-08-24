@@ -6,6 +6,8 @@ pub mod docks;
 pub mod edid;
 pub mod model;
 pub mod profile;
+pub mod report;
+pub mod report_html;
 pub mod rule_engine;
 
 pub use backend::*;

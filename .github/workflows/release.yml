@@ -23,13 +23,13 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: skirr-windows-x64
-          # macos-14 runners are Apple Silicon; macos-13 are Intel.
+          # Universal binary: both slices built on the Apple Silicon runner
+          # via cross-compilation — the macos-13 Intel runner pool queues for
+          # days, and lipo needs no Intel hardware at all.
           - os: macos-14
             target: aarch64-apple-darwin
-            artifact: skirr-macos-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact: skirr-macos-x64
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            artifact: skirr-macos-universal
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: skirr-linux-amd64
@@ -38,11 +38,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets || matrix.target }}
       - uses: Swatinem/rust-cache@v2
 
       - name: Build (release)
-        run: cargo build --release -p skirr-cli --target ${{ matrix.target }}
+        run: |
+          if [ "$RUNNER_OS" = "MacOS" ]; then
+            cargo build --release -p skirr-cli --target aarch64-apple-darwin
+            cargo build --release -p skirr-cli --target x86_64-apple-darwin
+          else
+            cargo build --release -p skirr-cli --target ${{ matrix.target }}
+          fi
 
       - name: Package (Windows portable .zip)
         if: runner.os == 'Windows'
@@ -58,14 +64,19 @@ jobs:
         shell: pwsh
         run: ./target/${{ matrix.target }}/release/skirr.exe --help
 
-      - name: Package (macOS .app -> .dmg)
+      - name: Package (macOS universal .app -> .dmg)
         if: runner.os == 'MacOS'
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
           APP="Skirr.app"
           mkdir -p "dist/$APP/Contents/MacOS" "dist/dmg-staging"
-          cp "target/${{ matrix.target }}/release/skirr" "dist/$APP/Contents/MacOS/skirr"
+          # Merge both architecture slices into one universal binary.
+          lipo -create \
+            "target/aarch64-apple-darwin/release/skirr" \
+            "target/x86_64-apple-darwin/release/skirr" \
+            -output "dist/$APP/Contents/MacOS/skirr"
+          lipo -info "dist/$APP/Contents/MacOS/skirr" | grep -q "aarch64 x86_64"
           cat > "dist/$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -86,12 +97,14 @@ jobs:
           cp -R "dist/$APP" dist/dmg-staging/
           ln -s /Applications dist/dmg-staging/Applications
           cat > dist/dmg-staging/HOW\ TO\ RUN.txt <<NOTE
-          Skirr ${GITHUB_REF_NAME} (macOS)
+          Skirr ${GITHUB_REF_NAME} (macOS, universal: Apple Silicon + Intel)
 
           1. Drag Skirr.app into the Applications folder.
-          2. First launch only: right-click Skirr.app and choose "Open",
-             then confirm ("Open Anyway"). This is Gatekeeper, because the
-             binary is not notarized yet.
+          2. First launch only, because the app is not notarized yet:
+             double-click Skirr.app, then open System Settings >
+             Privacy & Security and click "Open Anyway" next to the Skirr
+             message. Or clear the download quarantine flag once:
+                xattr -dr com.apple.quarantine /Applications/Skirr.app
           3. Or run the CLI directly from Terminal:
                 /Applications/Skirr.app/Contents/MacOS/skirr --help
           NOTE
