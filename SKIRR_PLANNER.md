@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 88%** *(phase-weighted: Phases 0–8 complete; Phase 9 GUI nearly done)*
+**Overall Progress: 92%** *(phase-weighted: Phases 0–9 complete; P2/P3 advanced features remain)*
 
 ---
 
@@ -408,12 +408,12 @@ CI must build all four artifacts on every release tag.
 - **Notes**: New Rust command `get_details` returns typed `DetailsPayload{devices, hubs, displays}` (serializable view models over UsbDevice/HubInfo/DisplayInfo — enums as Debug strings). ChainNode now carries device id for click-through. Details cached client-side, invalidated on Refresh. 3 GUI tests incl. hub-port-map occupancy. clippy/fmt clean; JS syntax-checked; workspace 157 tests still green.
 
 ### 9.3 GUI Polish
-- [ ] Dark/light theme
-- [ ] Responsive layout
-- [ ] Loading states
-- [ ] Error handling UI
-- [ ] First-run Gatekeeper guide
-- **Progress: 0%**
+- [x] Dark/light theme *(CSS vars already tokenized — manual ◐ toggle in header, `data-theme` attr on `<html>`, persisted to localStorage; unset attr follows prefers-color-scheme)*
+- [x] Responsive layout *(cards auto-fill grid; details panel goes full-width single-column below 55rem = 880px < 900px min window; verified against min window size)*
+- [x] Loading states *(withSpinner helper wraps overview/topology/displays IPC loads: spinner swap while in flight, prior content restored on error)*
+- [x] Error handling UI *(toast stack bottom-right with severity-colored border + auto-dismiss 6s; inline view errors kept and now also raise a toast)*
+- [x] First-run Gatekeeper guide *(dismissible amber card on Overview for macOS UA only: xattr command + Privacy & Security → Open Anyway; persisted dismissal)*
+- **Progress: 100%**
 
 ---
 
@@ -487,7 +487,7 @@ CI must build all four artifacts on every release tag.
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
 | 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
-| 9 | Tauri GUI | 75% | [~] In progress (9.1–9.2 done; 9.3 polish remains) |
+| 9 | Tauri GUI | 100% | [x] Complete (shell + all views + polish; TB/USB4 standalone panel deferred to Phase 10/11) |
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
@@ -526,15 +526,15 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 9.3 - GUI Polish
-**Action**: Polish pass on `skirr-gui/ui/` + small Rust-side hooks:
-- Loading states: skeleton/spinner while IPC calls resolve (overview, topology, displays)
-- Error handling UI: toast/banner pattern instead of inline-only error divs; retry buttons where sensible
-- Dark/light theme: CSS already has prefers-color-scheme — add manual toggle persisted to localStorage
-- First-run Gatekeeper guide: on macOS show a dismissible card pointing at README's xattr/Open Anyway steps (detect via navigator.platform / UA)
-- Responsive layout: verify at 900px min width; details panel already collapses
-**Verify locally**: clippy/fmt clean; JS syntax check; manual UI pass on dev host (empty bus + populated fixture)
-**Reference**: ui/style.css (theme vars already tokenized); app.js view lifecycle
+**Current**: Phase 10.1 - Thunderbolt/USB4 Deep Dive
+**Action**: First P2 advanced feature. Thunderbolt is currently only a presence flag (`thunderbolt_info` on UsbDevice); this phase builds real TB topology:
+- macOS: `IOService` matching for `IOThunderboltPort`/`AppleUSB20XHCIPort` neighbors — enumerate TB switches/routers and their downstream devices; wire into a new `thunderbolt_topology()` collector on the macos backend (extend `UsbBackend` trait or add side-channel)
+- Windows: `GetThunderboltControllerCount` / WPD + registry `HKLM\SYSTEM\CurrentControlSet\Control\Thunderbolt*` where available; graceful "unsupported" otherwise
+- Linux: `/sys/bus/thunderbolt/devices` sysfs walk (deviceX, domain, unique_id, generation, nvm_version)
+- GUI/CLI: render TB chains alongside USB chains, marked with generation/security level
+- Bandwidth allocation analysis + security levels per planner checklist
+**Verify locally**: clippy/fmt/test workspace-wide; dev host has no TB devices — populated-bus checks fold into the 🟡 hardware sweep
+**Reference**: skirr-macos/src/*.rs IOKit patterns; model.rs `thunderbolt_info`/`usb4_info`; planner Phase 10.1
 ---
-*Last updated: 2026-08-24 | Phase 9.2 done: device-details click-through panel, Displays tab, hub port maps, USB-C/PD in details. Remaining 9.2 note: standalone TB/USB4 panel deferred behind Phase 10/11 collectors.*
+*Last updated: 2026-08-25 | Phase 9 COMPLETE: Tauri 2 GUI with all views (overview/per-port-chain topology/device-details click-through/hub port maps/displays/monitor/diagnose/report export), theme toggle, toasts, spinners, Gatekeeper guide. Note: standalone TB/USB4 panel deferred behind Phase 10 collectors.*
 ---

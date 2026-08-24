@@ -17,9 +17,20 @@
       <button data-view="diagnose" class="tab">Diagnose</button>
       <button data-view="report" class="tab">Report</button>
     </nav>
+    <button id="theme-toggle" class="icon-btn" title="Toggle dark/light theme">◐</button>
   </header>
 
   <main>
+    <div id="gatekeeper-card" class="gatekeeper hidden">
+      <strong>First launch on macOS?</strong>
+      <p>Because Skirr is not notarized yet, macOS blocks the first start of an app
+         downloaded through a browser. Either clear the quarantine flag once:
+         <code>xattr -dr com.apple.quarantine /Applications/Skirr.app</code>,
+         or open <strong>System Settings → Privacy &amp; Security</strong> and click
+         <strong>Open Anyway</strong>.</p>
+      <button id="gatekeeper-dismiss">Don't show again</button>
+    </div>
+
     <section id="view-overview" class="view active">
       <div id="overview-cards" class="cards"></div>
       <div id="overview-error" class="error hidden"></div>
@@ -70,6 +81,8 @@
       <div id="report-status"></div>
     </section>
   </main>
+
+  <div id="toasts"></div>
 
   <script src="app.js"></script>
 </body>

@@ -25,9 +25,78 @@ function showError(id, message) {
   const el = $(id);
   el.textContent = message;
   el.classList.remove("hidden");
+  toast(message, "error");
 }
 function clearError(id) {
   $(id).classList.add("hidden");
+}
+
+// --- Toasts -------------------------------------------------------------------
+
+function toast(message, kind = "info", ttlMs = 6000) {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`;
+  el.textContent = message;
+  $("#toasts").appendChild(el);
+  setTimeout(() => {
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 300);
+  }, ttlMs);
+}
+
+// --- Loading spinner ------------------------------------------------------------
+
+// Wraps an async render function: swaps the container's content for a spinner
+// while the promise is in flight, then restores it.
+async function withSpinner(containerSel, fn) {
+  const el = $(containerSel);
+  if (!el || el.querySelector(".spinner-wrap")) return fn();
+  const prev = el.innerHTML;
+  el.innerHTML =
+    '<div class="spinner-wrap"><div class="spinner" role="status" aria-label="loading"></div></div>';
+  try {
+    await fn();
+  } finally {
+    const spin = el.querySelector(".spinner-wrap");
+    if (spin) spin.remove();
+    // If fn() didn't render anything (early return / error), restore prior view
+    // only when it stayed empty so we never blank out working content.
+    if (!el.innerHTML.trim()) el.innerHTML = prev;
+  }
+}
+
+// --- Theme toggle ------------------------------------------------------------------
+
+const THEME_KEY = "skirr-theme";
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  if (saved === "light" || saved === "dark") {
+    document.documentElement.dataset.theme = saved;
+  }
+  $("#theme-toggle").addEventListener("click", () => {
+    const current =
+      document.documentElement.dataset.theme ||
+      (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    const next = current === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem(THEME_KEY, next);
+  });
+}
+
+// --- First-run Gatekeeper guide (macOS) -----------------------------------------------
+
+const GATEKEEPER_KEY = "skirr-gatekeeper-dismissed";
+
+function initGatekeeperCard() {
+  const isMac = navigator.userAgent.includes("Macintosh") || navigator.platform.startsWith("Mac");
+  if (!isMac || localStorage.getItem(GATEKEEPER_KEY)) return;
+  const card = $("#gatekeeper-card");
+  card.classList.remove("hidden");
+  $("#gatekeeper-dismiss").addEventListener("click", () => {
+    localStorage.setItem(GATEKEEPER_KEY, "1");
+    card.classList.add("hidden");
+  });
 }
 
 function esc(s) {
@@ -40,6 +109,7 @@ function esc(s) {
 
 async function loadOverview() {
   clearError("#overview-error");
+  return withSpinner("#overview-cards", async () => {
   try {
     const o = await invoke("get_overview");
     const verdictClass =
@@ -56,6 +126,7 @@ async function loadOverview() {
   } catch (e) {
     showError("#overview-error", String(e));
   }
+  });
 }
 
 function card(k, v, s) {
@@ -86,6 +157,7 @@ function nodeHtml(n, depth) {
 
 async function loadTopology() {
   clearError("#topology-error");
+  return withSpinner("#topology-content", async () => {
   try {
     const [t] = await Promise.all([invoke("get_port_chains"), loadDetails()]);
     let html = "";
@@ -124,8 +196,9 @@ async function loadTopology() {
       el.addEventListener("click", () => showDeviceDetails(el.dataset.deviceId));
     });
   } catch (e) {
-    showError("#topology-error", String(e));
+      showError("#topology-error", String(e));
   }
+  });
 }
 
 // Hub port maps: one collapsible map per physical hub, rendered after the
@@ -199,6 +272,7 @@ function showDeviceDetails(id) {
 
 async function loadDisplays() {
   clearError("#displays-error");
+  return withSpinner("#displays-content", async () => {
   try {
     const details = await loadDetails();
     const list = details.displays;
@@ -221,8 +295,9 @@ async function loadDisplays() {
           .join("")}</div>`
       : "<p class='free'>No displays detected.</p>";
   } catch (e) {
-    showError("#displays-error", String(e));
+      showError("#displays-error", String(e));
   }
+  });
 }
 
 $("#displays-refresh").addEventListener("click", loadDisplays);
@@ -322,6 +397,8 @@ $("#report-save").addEventListener("click", async () => {
 
 // --- Boot ----------------------------------------------------------------------------
 
+initTheme();
+initGatekeeperCard();
 loadOverview();
 initMonitor();
 
