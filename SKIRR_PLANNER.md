@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 3%**
+**Overall Progress: 6%**
 
 ---
 
@@ -71,18 +71,19 @@ CI must build all four artifacts on every release tag.
 - **Notes**: Workspace builds green (`cargo check/clippy/fmt/test`). Fixed invalid manifest entries from initial scaffold: removed nonexistent crates/versions (`iokit-sys`, `libudev 0.8`, `libusb 0.6`, `objc2` framework features), replaced `libusb` with maintained `rusb`, bumped `drm` to 0.15, corrected `windows` crate feature name, gated platform deps behind `[target.'cfg(target_os = ...)]`, made Tauri opt-in via skirr-gui `gui` feature. CI: `.github/workflows/ci.yml`; Release matrix: `.github/workflows/release.yml`.
 
 ### 0.2 Create Skirr Data Map (Section 27)
-- [ ] Document VID/PID retrieval per OS
-- [ ] Document Parent/Child/Hub topology per OS
-- [ ] Document Port enumeration per OS
-- [ ] Document Current/Max USB speed per OS
-- [ ] Document USB-C capabilities per OS
-- [ ] Document USB-PD information per OS
-- [ ] Document EDID/Display retrieval per OS
-- [ ] Document Thunderbolt/USB4 per OS
-- [ ] Document Hotplug monitoring per OS
-- [ ] Mark Admin/Driver requirements per datapoint
-- [ ] Assign confidence scores per datapoint
-- **Progress: 0%**
+- [x] Document VID/PID retrieval per OS
+- [x] Document Parent/Child/Hub topology per OS
+- [x] Document Port enumeration per OS
+- [x] Document Current/Max USB speed per OS
+- [x] Document USB-C capabilities per OS
+- [x] Document USB-PD information per OS
+- [x] Document EDID/Display retrieval per OS
+- [x] Document Thunderbolt/USB4 per OS
+- [x] Document Hotplug monitoring per OS
+- [x] Mark Admin/Driver requirements per datapoint
+- [x] Assign confidence scores per datapoint
+- **Progress: 100%**
+- **Notes**: Delivered as `docs/DATA_MAP.md`. Techniques grounded in Shoko's implementation (PowerShell PnP parent map, system_profiler location_id tree, lsusb -t parsing) plus Rust-native primary paths (SetupAPI/CfgMgr32, IOKit, sysfs/libudev). Includes fallback chain, admin matrix, confidence scale, and Phase 13 crate/dep mapping.
 
 ---
 
@@ -423,7 +424,7 @@ CI must build all four artifacts on every release tag.
 
 | Phase | Name | Progress | Status |
 |-------|------|----------|--------|
-| 0 | Project Setup & Data Map | 50% | [~] In progress (0.1 done) |
+| 0 | Project Setup & Data Map | 100% | [x] Completed |
 | 1 | Core Data Model & Normalization | 0% | [ ] Not started |
 | 2 | Windows Backend | 0% | [ ] Not started |
 | 3 | macOS Backend | 0% | [ ] Not started |
@@ -453,10 +454,10 @@ CI must build all four artifacts on every release tag.
 
 ## Next Task for Agent
 
-**Current**: Phase 0.2 - Create Skirr Data Map (Section 27)
-**Action**: Document per-OS data sources for every datapoint (VID/PID, topology, ports, speeds, USB-C, PD, EDID, TB/USB4, hotplug), with admin/driver requirements and confidence scores
-**Reference**: `~/Documents/GitHub/klangche-proav-shoko` (data map section); produce as `docs/DATA_MAP.md`
-**Dependencies**: none — pure documentation task
+**Current**: Phase 1.1 - Define Common Data Model (skirr-core)
+**Action**: Review/complete `skirr-core/src/model.rs` — most structs already exist (Device, Hub, Topology, Speed, Display, USB-C, DiagnosticEvent, Fact/Rule/Verdict). Verify against DATA_MAP.md; add Profile struct (version + per-platform limits from §12) which is still missing.
+**Files**: `skirr-core/src/model.rs`, new `skirr-core/src/profile.rs` (re-export via lib.rs)
+**Reference**: `docs/DATA_MAP.md` §12 for limit values
 
 ---
-*Last updated: 2026-08-24 | Phase 0.1 complete; next agent: start Phase 0.2*
+*Last updated: 2026-08-24 | Phases 0.1–0.2 complete; next agent: start Phase 1.1 (Profile struct gap)*
