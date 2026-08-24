@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 6%**
+**Overall Progress: 10%**
 
 ---
 
@@ -90,24 +90,26 @@ CI must build all four artifacts on every release tag.
 ## Phase 1: MVP - Core Data Model & Normalization
 
 ### 1.1 Define Common Data Model (skirr-core)
-- [ ] Device struct (VID, PID, manufacturer, product, serial, class, subclass, protocol)
-- [ ] Hub struct (ports, children, parent, depth)
-- [ ] Topology struct (host controllers, root hubs, tree)
-- [ ] Speed struct (max_supported, current_link, bottleneck)
-- [ ] Display struct (EDID, resolution, refresh, physical size, connection path)
-- [ ] USB-C struct (capability, alt_mode, power, thunderbolt, usb4)
-- [ ] DiagnosticEvent struct (timestamp, type, device_id, details)
-- [ ] Fact/Rule/Verdict structs for rule engine
-- [ ] Profile struct (version, rules, limits)
-- **Progress: 0%**
+- [x] Device struct (VID, PID, manufacturer, product, serial, class, subclass, protocol)
+- [x] Hub struct (ports, children, parent, depth)
+- [x] Topology struct (host controllers, root hubs, tree)
+- [x] Speed struct (max_supported, current_link, bottleneck)
+- [x] Display struct (EDID, resolution, refresh, physical size, connection path)
+- [x] USB-C struct (capability, alt_mode, power, thunderbolt, usb4)
+- [x] DiagnosticEvent struct (timestamp, type, device_id, details)
+- [x] Fact/Rule/Verdict structs for rule engine
+- [x] Profile struct (version, rules, limits)
+- **Progress: 100%**
+- **Notes**: `model.rs` landed with initial scaffold; Profile added in `profile.rs` (`PlatformKey`, `StabilityLimits`, `RuleOverride`, `Profile::standard_v1()` with Shoko csv values + mobile reference rows). 4 unit tests; serde roundtrip verified.
 
 ### 1.2 Implement Normalization Traits
-- [ ] `UsbBackend` trait (enumerate, get_topology, get_speeds, monitor)
-- [ ] `DisplayBackend` trait (enumerate_displays, get_edid)
-- [ ] `UsbCBackend` trait (get_capabilities, get_power, get_thunderbolt)
-- [ ] `HotplugBackend` trait (start_monitoring, stop_monitoring, events)
-- [ ] Error types for each backend
-- **Progress: 0%**
+- [x] `UsbBackend` trait (enumerate, get_topology, get_speeds, monitor)
+- [x] `DisplayBackend` trait (enumerate_displays, get_edid)
+- [x] `UsbCBackend` trait (get_capabilities, get_power, get_thunderbolt)
+- [x] `HotplugBackend` trait (start_monitoring, stop_monitoring, events)
+- [x] Error types for each backend
+- **Progress: 100%**
+- **Notes**: Delivered in `skirr-core/src/backend.rs`. Single `BackendError` (Unsupported / PermissionDenied / OsApi / NotMonitoring) carries backend name context; object-safe traits (`Box<dyn UsbBackend>` verified). Sync design + channel-backed `poll_event(timeout)` keeps skirr-core runtime-free. Includes `StubBackend` (test/CLI bring-up) with lifecycle + event tests; 9 unit tests green.
 
 ### 1.3 Rule Engine Implementation
 - [ ] Profile loader (TOML/JSON)
@@ -425,7 +427,7 @@ CI must build all four artifacts on every release tag.
 | Phase | Name | Progress | Status |
 |-------|------|----------|--------|
 | 0 | Project Setup & Data Map | 100% | [x] Completed |
-| 1 | Core Data Model & Normalization | 0% | [ ] Not started |
+| 1 | Core Data Model & Normalization | 67% | [~] In progress (1.1, 1.2 done) |
 | 2 | Windows Backend | 0% | [ ] Not started |
 | 3 | macOS Backend | 0% | [ ] Not started |
 | 4 | CLI | 0% | [ ] Not started |
@@ -437,7 +439,24 @@ CI must build all four artifacts on every release tag.
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 0%**
+**Total Project Progress: 10%**
+
+### CI Status (owner decision, 2026-08-24)
+
+**Automatic CI runs are PAUSED on `dev`** — `.github/workflows/ci.yml` triggers are
+commented out (`workflow_dispatch` only) until backends reach a more stable state.
+Rules while paused:
+
+1. Agents MUST still verify locally before handoff: `cargo fmt --all --check`,
+   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
+2. Known re-enable blocker: ubuntu runner needs `pkg-config` + `libudev-dev`
+   installed before `cargo clippy/test` (the `libudev` crate links system libudev).
+   Fix is already noted as a comment inside ci.yml.
+3. Release workflow (`release.yml`) is tag-triggered and unaffected.
+4. Re-enable CI when Phase 2 or 3 first lands a working backend, whichever comes
+   first. Real device/hardware testing itself stays deferred to Phase 5.3
+   (MVP Verification), which is intentionally far out; local unit tests are the
+   only quality gate until then.
 
 ---
 
@@ -449,15 +468,20 @@ CI must build all four artifacts on every release tag.
 4. **Handoff ready**: When task is `[x]`, next agent can pick up next `[ ]`
 5. **Never skip**: Tasks must be done in order within a phase (dependencies)
 6. **Cross-phase**: Phase N+1 cannot start until Phase N is 100%
+7. **CI paused**: While CI Status says PAUSED, run the three local verification commands manually on every handoff (see CI Status above); no push-watching expected
 
 ---
 
 ## Next Task for Agent
 
-**Current**: Phase 1.1 - Define Common Data Model (skirr-core)
-**Action**: Review/complete `skirr-core/src/model.rs` — most structs already exist (Device, Hub, Topology, Speed, Display, USB-C, DiagnosticEvent, Fact/Rule/Verdict). Verify against DATA_MAP.md; add Profile struct (version + per-platform limits from §12) which is still missing.
-**Files**: `skirr-core/src/model.rs`, new `skirr-core/src/profile.rs` (re-export via lib.rs)
-**Reference**: `docs/DATA_MAP.md` §12 for limit values
-
+**Current**: Phase 1.3 - Rule Engine Implementation (skirr-core)
+**Action**: Create `skirr-core/src/rule_engine.rs`:
+- Profile loader (TOML/JSON) — `Profile` already exists in profile.rs; add `Profile::from_toml_file`/`from_json_str`
+- Fact collector from normalized model (SystemTopology → Vec<Fact>)
+- Rule evaluator (max hubs, max hops, max tiers, min speed) using StabilityLimits
+- Verdict generator (PASS/WARNING/FAIL)
+- Explanation formatter (FACT/RULE/VERDICT output, Shoko-style)
+- Wire default `Profile::standard_v1()` as built-in
+**Reference**: model.rs DiagnosticResult/RuleEvaluation/Fact types; DATA_MAP.md §12
 ---
-*Last updated: 2026-08-24 | Phases 0.1–0.2 complete; next agent: start Phase 1.1 (Profile struct gap)*
+*Last updated: 2026-08-24 | Phase 1.2 complete; next agent: start Phase 1.3 (final MVP-core phase)*
