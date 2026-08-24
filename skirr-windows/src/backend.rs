@@ -2,6 +2,8 @@
 
 use crate::hwid::{extract_serial_from_instance, parse_hardware_id, usb_class_from_windows_name};
 use crate::native::RawDeviceInfo;
+#[cfg(windows)]
+use skirr_core::UsbSpeed;
 use skirr_core::{
     BackendError, BackendResult, ConnectionStatus, PlatformInfo, SpeedReport, SystemTopology,
     UsbBackend, UsbClass, UsbDevice,
@@ -36,7 +38,13 @@ impl UsbBackend for SkirrWindowsBackend {
         {
             let raw = crate::native::win::enumerate()?;
             let info = platform_info_impl()?;
-            Ok(crate::topology::build(&raw, info, chrono::Utc::now()))
+            let mut topo = crate::topology::build(&raw, info, chrono::Utc::now());
+            // Displays are best-effort: enumeration failure must not sink
+            // the whole topology snapshot.
+            if crate::displays::attach(&mut topo).is_err() {
+                topo.displays.clear();
+            }
+            Ok(topo)
         }
         #[cfg(not(windows))]
         {
@@ -233,6 +241,13 @@ pub(crate) fn build_usb_device(raw: &RawDeviceInfo) -> UsbDevice {
     }
     if let Some(status) = &raw.status {
         device.properties.insert("status".into(), status.clone());
+    }
+    // Billboard devices announce a Type-C partner (DATA_MAP §5).
+    if crate::usb_c::is_billboard(raw) {
+        device.usb_c_info = Some(crate::usb_c::billboard_info());
+        device
+            .properties
+            .insert("usb_c_reason".into(), "billboard partner detected".into());
     }
     device.connection_status = ConnectionStatus::Connected;
     device

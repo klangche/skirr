@@ -13,7 +13,10 @@
 use crate::hwid::{extract_serial_from_instance, parse_hardware_id};
 use crate::native::RawDeviceInfo;
 use chrono::{DateTime, Utc};
+#[cfg(not(windows))]
 use skirr_core::{BackendError, BackendResult, DiagnosticEvent, EventSeverity, EventType};
+#[cfg(windows)]
+use skirr_core::{BackendResult, DiagnosticEvent, EventSeverity, EventType};
 use std::collections::HashMap;
 #[cfg(windows)]
 use std::time::Duration;

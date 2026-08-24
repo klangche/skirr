@@ -44,6 +44,17 @@ pub(crate) fn make_instance(vendor_id: u16, product_id: u16, location_id: u32) -
     format!(r"USB\VID_{vendor_id:04X}&PID_{product_id:04X}\{location_id:#010x}")
 }
 
+/// One connected display as read from `IODisplayConnect` (DATA_MAP §7):
+/// registry service name, vendor/product codes, raw EDID bytes when the
+/// panel exposes them. Decoding to `DisplayInfo` happens in the backend.
+#[derive(Debug, Clone)]
+pub(crate) struct DisplayRecord {
+    pub service_name: String,
+    pub vendor_id: Option<u32>,
+    pub product_id: Option<u32>,
+    pub edid_raw: Vec<u8>,
+}
+
 /// Build the hardware-id string matching our instance scheme.
 pub(crate) fn make_hwid(vendor_id: u16, product_id: u16) -> String {
     format!(r"USB\VID_{vendor_id:04X}&PID_{product_id:04X}")
@@ -203,6 +214,7 @@ mod iokit {
             plane: *const c_char,
             parent: *mut IoObject,
         ) -> Kern;
+        fn IORegistryEntryGetName(entry: IoObject, name: *mut c_char) -> Kern;
         fn CFStringCreateWithCString(
             alloc: *mut c_void,
             c_str: *const c_char,
@@ -211,6 +223,8 @@ mod iokit {
         fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
         fn CFGetTypeID(cf: *const c_void) -> usize;
         fn CFNumberGetValue(number: *const c_void, the_type: isize, value: *mut c_void) -> bool;
+        fn CFDataGetLength(data: *const c_void) -> isize;
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
         fn CFStringGetCString(
             s: *const c_void,
             buffer: *mut c_char,
@@ -284,6 +298,23 @@ mod iokit {
                     .to_string_lossy()
                     .into_owned(),
             )
+        }
+
+        /// Raw bytes property (e.g. `IODisplayEDID`).
+        fn data(&self, key: &str) -> Option<Vec<u8>> {
+            let v = self.get(key);
+            if v.is_null() {
+                return None;
+            }
+            let len = unsafe { CFDataGetLength(v) };
+            if len <= 0 {
+                return None;
+            }
+            let ptr = unsafe { CFDataGetBytePtr(v) };
+            if ptr.is_null() {
+                return None;
+            }
+            Some(unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec())
         }
     }
 
@@ -421,6 +452,120 @@ mod iokit {
         unsafe { IOObjectRelease(parent) };
         result
     }
+
+    /// Names of present Type-C-related services (`AppleTypeCCRU` family).
+    /// Empty result = this Mac exposes nothing — the honest "not exposed"
+    /// outcome per DATA_MAP §5.
+    pub(super) fn typec_service_names() -> Result<Vec<String>, BackendError> {
+        const CANDIDATES: [&str; 2] = ["AppleTypeCCRU", "AppleUSBXHCIPortTypeC"];
+        let mut found = Vec::new();
+        for service in CANDIDATES {
+            let name = CString::new(service)
+                .map_err(|e| BackendError::os_api(crate::BACKEND_NAME, format!("internal: {e}")))?;
+            let mut iterator: IoObject = 0;
+            let kr = unsafe {
+                IOServiceGetMatchingServices(
+                    K_IO_MAIN_PORT_DEFAULT,
+                    IOServiceMatching(name.as_ptr()),
+                    &mut iterator,
+                )
+            };
+            if kr != KERN_SUCCESS {
+                continue;
+            }
+            loop {
+                let entry = unsafe { IOIteratorNext(iterator) };
+                if entry == 0 {
+                    break;
+                }
+                let mut buf = [0i8; 128];
+                let gk = unsafe { IORegistryEntryGetName(entry, buf.as_mut_ptr()) };
+                if gk == KERN_SUCCESS {
+                    let cstr = unsafe { CStr::from_ptr(buf.as_ptr()) };
+                    if let Ok(s) = cstr.to_str() {
+                        found.push(s.to_string());
+                    }
+                }
+                unsafe { IOObjectRelease(entry) };
+            }
+            unsafe { IOObjectRelease(iterator) };
+        }
+        Ok(found)
+    }
+
+    /// Walk `IODisplayConnect` services collecting EDID + id codes.
+    pub(super) fn display_records() -> Result<Vec<DisplayRecord>, BackendError> {
+        let name = CString::new("IODisplayConnect")
+            .map_err(|e| BackendError::os_api(crate::BACKEND_NAME, format!("internal: {e}")))?;
+        let mut iterator: IoObject = 0;
+        let kr = unsafe {
+            IOServiceGetMatchingServices(
+                K_IO_MAIN_PORT_DEFAULT,
+                IOServiceMatching(name.as_ptr()),
+                &mut iterator,
+            )
+        };
+        if kr != KERN_SUCCESS {
+            return Err(BackendError::os_api(
+                crate::BACKEND_NAME,
+                format!("IOServiceGetMatchingServices(IODisplayConnect) kern={kr}"),
+            ));
+        }
+
+        let mut out = Vec::new();
+        loop {
+            let entry = unsafe { IOIteratorNext(iterator) };
+            if entry == 0 {
+                break;
+            }
+            if let Some(record) = collect_display(entry) {
+                out.push(record);
+            }
+            unsafe { IOObjectRelease(entry) };
+        }
+        unsafe { IOObjectRelease(iterator) };
+        Ok(out)
+    }
+
+    fn collect_display(entry: IoObject) -> Option<DisplayRecord> {
+        let mut props: *mut c_void = std::ptr::null_mut();
+        let kr = unsafe {
+            IORegistryEntryCreateCFProperties(entry, &mut props, std::ptr::null_mut(), 0)
+        };
+        if kr != KERN_SUCCESS || props.is_null() {
+            return None;
+        }
+        let dict = Dict(props);
+        // A display with neither EDID nor id codes carries nothing usable.
+        let edid_raw = dict.data("IODisplayEDID").unwrap_or_default();
+        let vendor_id = dict
+            .number::<i64>("DisplayVendorID")
+            .and_then(|v| u32::try_from(v).ok());
+        let product_id = dict
+            .number::<i64>("DisplayProductID")
+            .and_then(|v| u32::try_from(v).ok());
+        let result = if edid_raw.is_empty() && vendor_id.is_none() && product_id.is_none() {
+            None
+        } else {
+            let mut buf = [0i8; 128];
+            let service_name =
+                if unsafe { IORegistryEntryGetName(entry, buf.as_mut_ptr()) } == KERN_SUCCESS {
+                    unsafe { CStr::from_ptr(buf.as_ptr()) }
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    String::new()
+                };
+            Some(DisplayRecord {
+                service_name,
+                vendor_id,
+                product_id,
+                edid_raw,
+            })
+        };
+        unsafe { CFRelease(props) };
+        result
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -433,6 +578,21 @@ fn system_profiler_enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
         })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_system_profiler_json(&stdout)
+}
+
+/// Names of present Type-C-related IORegistry services, if any.
+#[cfg(target_os = "macos")]
+pub(crate) fn typec_services() -> Result<Vec<String>, BackendError> {
+    iokit::typec_service_names()
+}
+
+/// Connected displays via `IODisplayConnect` IORegistry services.
+/// Returns raw EDID bytes plus vendor/product codes per display; EDID
+/// decoding is shared (`skirr_core::edid`). Empty result = nothing
+/// exposed — the honest outcome, never an error on healthy systems.
+#[cfg(target_os = "macos")]
+pub(crate) fn displays() -> Result<Vec<DisplayRecord>, BackendError> {
+    iokit::display_records()
 }
 
 /// DATA_MAP §11 chain: IOKit primary, system_profiler fallback.

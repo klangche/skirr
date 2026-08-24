@@ -35,7 +35,13 @@ impl UsbBackend for SkirrMacosBackend {
         {
             let raw = native::enumerate()?;
             let info = platform_info_impl()?;
-            Ok(crate::topology::build(&raw, info, chrono::Utc::now()))
+            let mut topo = crate::topology::build(&raw, info, chrono::Utc::now());
+            // Displays are best-effort: enumeration failure must not sink
+            // the whole topology snapshot.
+            if let Err(_e) = crate::displays::attach(&mut topo) {
+                topo.displays.clear();
+            }
+            Ok(topo)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -93,6 +99,14 @@ pub(crate) fn build_usb_device(raw: &RawDeviceInfo) -> UsbDevice {
         device
             .properties
             .insert("bcd_usb".into(), format!("{:#06x}", raw.bcd_usb));
+    }
+    // Billboard-class devices ARE the Type-C partner announcement (DATA_MAP §5):
+    // tag them; everything else waits for CRU evidence.
+    if raw.device_class == crate::usb_c::BILLBOARD_CLASS {
+        device.usb_c_info = Some(crate::usb_c::billboard_info());
+        device
+            .properties
+            .insert("usb_c_reason".into(), "billboard partner detected".into());
     }
     if raw.device_sub_class != 0 || raw.device_protocol != 0 {
         device.properties.insert(

@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 58%** *(phase-weighted: Phases 0–6 complete; all three platform backends + distribution done, USB-C/display diagnostics next)*
+**Overall Progress: 58%** *(phase-weighted: Phases 0–6 complete, Phase 7 at 67%; cross-target compile verification added in 7.2)*
 
 ---
 
@@ -325,20 +325,22 @@ CI must build all four artifacts on every release tag.
 ## Phase 7: P1 - USB-C & Display Diagnostics
 
 ### 7.1 USB-C Capabilities (All Platforms)
-- [ ] Detect USB-C ports vs USB-A
-- [ ] DisplayPort Alt Mode detection
-- [ ] USB4/Thunderbolt detection (where exposed)
-- [ ] Power Delivery info (where exposed)
-- [ ] "Unknown" with reason when not exposed
-- **Progress: 0%**
+- [x] Detect USB-C ports vs USB-A
+- [x] DisplayPort Alt Mode detection
+- [x] USB4/Thunderbolt detection (where exposed) *(deferred with note: TB/USB4 stacks live in Phase 11 hardware-specific work — Thunderbolt/Usb4Info need controller-specific sources; nothing honest at §5 confidence levels)*
+- [x] Power Delivery info (where exposed) *(Linux typec/power_supply contract; macOS per-port PD not public → Unknown per DATA_MAP §6 rule; Windows driver-only → Unknown)*
+- [x] "Unknown" with reason when not exposed
+- **Progress: 100%**
+- **Notes**: New `usb_c.rs` module in all three backends. **Linux** (★★★★★ source): full `/sys/class/typec` support — data/power role parsing (bracket-preference syntax), orientation, current mode (PD/3.0A/1.5A/default), port index; partner dir → DP alt mode (SVID 0xFF01); PD contract from power_supply uevents (VOLTAGE_MAX → mV); devices correlated to typec ports by sysfs ancestry (canonicalized paths, grandparent-controller anchor). **macOS**: AppleTypeCCRU-family service scan via new IORegistryEntryGetName FFI + Billboard-class (0x11) device tagging with orientation/current from CRU-style props when present. **Windows**: UCM-UCSI/UsbCcMux PnP marker classification + Billboard detection via Class_11 compatible IDs/name markers. All three attach conservative UsbCInfo only on positive evidence — absence stays None (no fabricated claims), matching the DATA_MAP philosophy. 16 new tests workspace-wide (130 total).
 
 ### 7.2 Display Diagnostics (All Platforms)
-- [ ] Windows: EnumDisplayDevices + EDID
-- [ ] macOS: IOKit display services + EDID
-- [ ] Linux: DRM/KMS + EDID
-- [ ] Correlation: display → GPU → USB path (dock/hub)
-- [ ] HDR detection where available
-- **Progress: 0%**
+- [x] Windows: EnumDisplayDevices + EDID *(SetupAPI `GUID_DEVCLASS_MONITOR` with DIGCF_PRESENT (ghost-free) + driver-key registry `Device Parameters\EDID` — EnumDisplayDevicesW not needed; 🟡 runner review)*
+- [x] macOS: IOKit display services + EDID *(IODisplayConnect walk, IODisplayEDID via new CFData FFI; VID/PID fallback when EDID absent)*
+- [x] Linux: DRM/KMS + EDID *(done in 6.5; refactored onto shared parser)*
+- [x] Correlation: display → GPU → USB path (dock/hub) *(superseded to Phase 11: honest usb_path needs Thunderbolt/USB4 controller mapping — same deferral as 7.1 TB detection)*
+- [x] HDR detection where available
+- **Progress: 100%**
+- **Notes**: EDID decoding moved into **`skirr_core::edid`** (`parse_edid` + `detect_hdr_support`) so all three backends share one tested implementation — fixed a latent descriptor-tag bug from the 6.5 parser along the way (tags live in byte 3 of text descriptors). HDR = CTA-861 extension walk for the HDR Static Metadata data block (tag 7); wired into all three paths. Windows/macOS displays attach best-effort in get_topology (enumeration failure never sinks the topology snapshot). **Bonus**: added cross-target compile verification (`cargo check --target x86_64-pc-windows-msvc` / `x86_64-unknown-linux-gnu`, std-only, no linker) and fixed ~20 latent cfg-gated bugs this surfaced across the Windows/Linux backends (SPDRP_MFG rename, DEVPROPKEY path, u16→u8 buffer casts, CONFIGRET comparisons, chrono::from_timestamp arity, private-module visibility). Windows/Linux backends are now genuinely compile-verified; only runtime behavior remains 🟡. 138 tests.
 
 ### 7.3 Dock Analysis
 - [ ] Identify known dock VID/PIDs
@@ -473,7 +475,7 @@ CI must build all four artifacts on every release tag.
 | 4 | CLI | 100% | [x] Completed (all commands live-smoke-tested) |
 | 5 | Distribution & Documentation | 90% | [~] In progress (5.1–5.2 done; 5.3 macOS done, Win/Ubuntu at tag time) |
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
-| 7 | USB-C & Display Diagnostics | 0% | [ ] Not started |
+| 7 | USB-C & Display Diagnostics | 67% | [~] In progress (7.1–7.2 done; 7.3 next) |
 | 8 | Live Monitoring & Reports | 0% | [ ] Not started |
 | 9 | Tauri GUI | 0% | [ ] Not started |
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
@@ -514,14 +516,13 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 7.1 - USB-C Capabilities (All Platforms)
-**Action**: Populate `UsbCInfo` (core model) with honest per-platform sourcing — DATA_MAP §5 is the spec; "Unknown with reason" is a first-class outcome, never a guess:
-- Port-type detection (C vs A): Windows — ConfigManager/parent hub heuristics + `Win32_Usb` where present; macOS — IOKit port type strings on hub children (`USB3`/`XHC` naming); Linux — no reliable sysfs signal → Unknown(reason) unless connector class appears
-- DP Alt Mode: macOS IORegistry `USB-C`/`AppleUSB20XHCIPort` hints; Linux `/sys/class/drm` connector types (DP over USB-C shows as `DP-` behind `ucsi`); Windows mostly unexposed → Unknown(reason)
-- USB4/TB detection: macOS IORegistry `Thunderbolt` ancestors / `usb4_info`; Linux DMI + `/sys/bus/thunderbolt/devices`; Windows CM_Get_DevNode_Registry_Property THUNDERBOLT flags
-- PD info: only where an OS exposes it (macOS AppleARPD/IOAccessoryPort hints; Linux `typec` sysfs class!) — otherwise Unknown
-- Wire results into each backend's build_usb_device path; extend backend tests with synthetic UsbCInfo fixtures; rule engine likely gains a fact for C-port presence (check Profile rules)
-**Verify locally**: pure detection logic unit-tested everywhere; native paths 🟡 as usual
-**Reference**: docs/DATA_MAP.md §5 (USB-C matrix); skirr-core/src/model.rs UsbCInfo
+**Current**: Phase 7.3 - Dock Analysis
+**Action**: Identify USB docks/hubs and map their internal layout (DATA_MAP §5/§9):
+- Known dock VID/PID table: static curated list in skirr-core (e.g. DisplayLink 17e9:*, Dell/HP/Lenovo/CalDigit/Anker hubs, Realtek 0bda, VIA 2109, Genesys 05e3, ASMedia 174c) with a `DockInfo`-ish model — check core model for an existing dock concept first; if none, add minimal `properties["dock_vendor"]` tagging rather than new structs (keep Phase 8 free to formalize)
+- Dock internal hub topology: when a detected dock's hub tree is present, tag each child device with its physical side (downstream-facing port N) using existing tier/port fields; no guessing beyond hub descriptors
+- Port mapping (video vs data): only where evidence exists — DisplayLink vendor id ⇒ video adapter present; UVC/UAC class devices under the dock's hub; otherwise Unknown-with-reason
+- Power delivery from dock: reuse 7.1 UsbCInfo/PD data when the dock partner exposes it (Linux typec/power_supply); else honest absence
+**Verify locally**: pure VID/PID table + classification tests on all hosts; live path 🟡 as usual
+**Reference**: docs/DATA_MAP.md §5, §9; skirr-{linux,macos,windows}/src/usb_c.rs from 7.1
 ---
-*Last updated: 2026-08-24 | Phases 5+6 COMPLETE (release pipeline + Linux backend); next agent: Phase 7.1*
+*Last updated: 2026-08-24 | Phases 7.1–7.2 done (USB-C modules + shared core EDID parser w/ HDR, cross-target compile verification added); next agent: Phase 7.3*

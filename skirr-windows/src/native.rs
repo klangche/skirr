@@ -144,7 +144,7 @@ pub fn decode_utf16_bytes(buf: &[u8]) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use super::{decode_utf16, parse_powershell_json, split_multi_sz, RawDeviceInfo};
     use skirr_core::BackendError;
     use std::os::windows::process::CommandExt;
@@ -156,7 +156,7 @@ mod win {
 
     /// Enumerate present USB devices: native SetupAPI first, PowerShell when
     /// the native API errors or yields nothing (docs/DATA_MAP.md §11 chain).
-    pub(super) fn enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
+    pub(crate) fn enumerate() -> Result<Vec<RawDeviceInfo>, BackendError> {
         match unsafe { setupapi_enumerate() } {
             Ok(devices) if !devices.is_empty() => Ok(devices),
             _ => powershell_enumerate(),
@@ -164,8 +164,8 @@ mod win {
     }
 
     /// True when the current process holds an admin token.
-    pub(super) fn is_elevated() -> bool {
-        unsafe { IsUserAnAdmin().is_ok() }
+    pub(crate) fn is_elevated() -> bool {
+        unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() }
     }
 
     unsafe fn setupapi_enumerate() -> windows::core::Result<Vec<RawDeviceInfo>> {
@@ -194,15 +194,17 @@ mod win {
                     };
 
                 let str_prop = |prop| read_string_property(hset, &data, prop);
-                let parent =
-                    unsafe { read_device_property_string(hset, &data, &DEVPKEY_Device_Parent) };
+                let parent = read_device_property_string(hset, &data, &DEVPKEY_Device_Parent);
                 let mut hw_buf = [0u16; 2048];
                 let hardware_ids = SetupDiGetDeviceRegistryPropertyW(
                     hset,
                     &data,
                     SPDRP_HARDWAREID,
                     None,
-                    Some(&mut hw_buf),
+                    Some(std::slice::from_raw_parts_mut(
+                        hw_buf.as_mut_ptr().cast::<u8>(),
+                        std::mem::size_of_val(&hw_buf),
+                    )),
                     None,
                 )
                 .map(|_| split_multi_sz(&hw_buf))
@@ -211,7 +213,7 @@ mod win {
                 devices.push(RawDeviceInfo {
                     instance_id,
                     hardware_ids,
-                    manufacturer: str_prop(SPDRP_MANUFACTURER),
+                    manufacturer: str_prop(SPDRP_MFG),
                     description: str_prop(SPDRP_DEVICEDESC),
                     friendly_name: str_prop(SPDRP_FRIENDLYNAME),
                     class_name: str_prop(SPDRP_CLASS),
@@ -233,7 +235,18 @@ mod win {
     ) -> Option<String> {
         let mut buf = [0u16; 1024];
         unsafe {
-            SetupDiGetDeviceRegistryPropertyW(hset, data, prop, None, Some(&mut buf), None).ok()?;
+            SetupDiGetDeviceRegistryPropertyW(
+                hset,
+                data,
+                prop,
+                None,
+                Some(std::slice::from_raw_parts_mut(
+                    buf.as_mut_ptr().cast::<u8>(),
+                    std::mem::size_of_val(&buf),
+                )),
+                None,
+            )
+            .ok()?;
         }
         decode_utf16(&buf)
     }
@@ -242,13 +255,12 @@ mod win {
     unsafe fn read_device_property_string(
         hset: HDEVINFO,
         data: &SP_DEVINFO_DATA,
-        key: &windows::Win32::Devices::Properties::DEVPROPKEY,
+        key: &windows::Win32::Foundation::DEVPROPKEY,
     ) -> Option<String> {
-        let mut ptype: DEVPROPTYPE = 0;
+        let mut ptype = DEVPROPTYPE::default();
         let mut buf = [0u8; 1024];
         unsafe {
-            SetupDiGetDevicePropertyW(hset, data, key, Some(&mut ptype), Some(&mut buf), None, 0)
-                .ok()?;
+            SetupDiGetDevicePropertyW(hset, data, key, &mut ptype, Some(&mut buf), None, 0).ok()?;
         }
         super::decode_utf16_bytes(&buf)
     }
@@ -263,5 +275,111 @@ mod win {
         let stdout = String::from_utf8_lossy(&output.stdout);
         parse_powershell_json(&stdout)
             .map_err(|e| BackendError::os_api("skirr-windows", format!("powershell parse: {e}")))
+    }
+
+    /// Present monitors with their EDID bytes (DATA_MAP §7): SetupAPI for
+    /// presence, driver-key registry value `Device Parameters\EDID` for
+    /// bytes. Errors only when SetupAPI itself fails; monitors without an
+    /// EDID value are skipped (honest absence).
+    pub(crate) fn display_records() -> Result<Vec<crate::displays::DisplayRecord>, BackendError> {
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, KEY_QUERY_VALUE, REG_BINARY,
+        };
+
+        fn to_utf16z(s: &str) -> Vec<u16> {
+            s.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        unsafe {
+            let hset =
+                SetupDiGetClassDevsW(Some(&GUID_DEVCLASS_MONITOR), None, None, DIGCF_PRESENT)
+                    .map_err(|e| {
+                        BackendError::os_api(
+                            "skirr-windows",
+                            format!("SetupDiGetClassDevsW(MONITOR): {e}"),
+                        )
+                    })?;
+
+            let mut out = Vec::new();
+            for index in 0..u32::MAX {
+                let mut data = SP_DEVINFO_DATA::default();
+                data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+                if SetupDiEnumDeviceInfo(hset, index, &mut data).is_err() {
+                    break;
+                }
+                let mut id_buf = [0u16; 512];
+                let instance_id =
+                    match SetupDiGetDeviceInstanceIdW(hset, &data, Some(&mut id_buf), None) {
+                        Ok(_) => decode_utf16(&id_buf).unwrap_or_default(),
+                        Err(_) => continue,
+                    };
+
+                // Software (driver) key of this devnode.
+                let mut driver_key = HKEY::default();
+                if CM_Open_DevNode_Key(
+                    data.DevInst,
+                    KEY_QUERY_VALUE.0,
+                    0,
+                    RegDisposition_OpenExisting,
+                    &mut driver_key,
+                    0,
+                ) != CR_SUCCESS
+                {
+                    continue;
+                }
+
+                let edid_raw = || -> Option<Vec<u8>> {
+                    let subkey = to_utf16z("Device Parameters");
+                    let mut params_key = HKEY::default();
+                    if RegOpenKeyExW(
+                        driver_key,
+                        windows::core::PCWSTR(subkey.as_ptr()),
+                        None,
+                        KEY_QUERY_VALUE,
+                        &mut params_key,
+                    )
+                    .is_err()
+                    {
+                        return None;
+                    }
+                    let value_name = to_utf16z("EDID");
+                    let mut value_type = REG_BINARY;
+                    let mut size: u32 = 0;
+                    let more = RegQueryValueExW(
+                        params_key,
+                        windows::core::PCWSTR(value_name.as_ptr()),
+                        None,
+                        Some(&mut value_type),
+                        None,
+                        Some(&mut size),
+                    );
+                    if more != ERROR_SUCCESS || size == 0 || size > 32 * 1024 {
+                        let _ = RegCloseKey(params_key);
+                        return None;
+                    }
+                    let mut buf = vec![0u8; size as usize];
+                    let ok = RegQueryValueExW(
+                        params_key,
+                        windows::core::PCWSTR(value_name.as_ptr()),
+                        None,
+                        None,
+                        Some(buf.as_mut_ptr()),
+                        Some(&mut size),
+                    );
+                    let _ = RegCloseKey(params_key);
+                    (ok == ERROR_SUCCESS).then_some(buf)
+                }();
+                let _ = RegCloseKey(driver_key);
+
+                if let Some(edid_raw) = edid_raw {
+                    out.push(crate::displays::DisplayRecord {
+                        instance_id,
+                        edid_raw,
+                    });
+                }
+            }
+            let _ = SetupDiDestroyDeviceInfoList(hset);
+            Ok(out)
+        }
     }
 }

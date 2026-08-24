@@ -8,11 +8,13 @@
 //! normalization layers compile everywhere so tests run on any host.
 
 pub mod backend;
+pub mod displays;
 mod hotplug;
 pub mod hwid;
 mod native;
 mod speeds;
 mod topology;
+pub mod usb_c;
 
 pub use backend::SkirrWindowsBackend;
 pub use hwid::{parse_hardware_id, parse_instance_path, HardwareId, InstancePathInfo};

@@ -148,7 +148,7 @@ fn class_from_u8(value: u8) -> UsbClass {
 
 /// Read one device's attributes from its sysfs directory.
 #[cfg(target_os = "linux")]
-pub fn collect_entry(dir: &Path) -> std::io::Result<Option<RawDeviceInfo>> {
+pub fn collect_entry(dir: &std::path::Path) -> std::io::Result<Option<RawDeviceInfo>> {
     use std::fs;
 
     let name = match dir.file_name().and_then(|n| n.to_str()) {
@@ -174,14 +174,17 @@ pub fn collect_entry(dir: &Path) -> std::io::Result<Option<RawDeviceInfo>> {
         device_class: read("bDeviceClass")
             .as_deref()
             .and_then(parse_hex)
+            .map(|v| u8::try_from(v).unwrap_or(0))
             .unwrap_or(0),
         device_subclass: read("bDeviceSubClass")
             .as_deref()
             .and_then(parse_hex)
+            .map(|v| u8::try_from(v).unwrap_or(0))
             .unwrap_or(0),
         device_protocol: read("bDeviceProtocol")
             .as_deref()
             .and_then(parse_hex)
+            .map(|v| u8::try_from(v).unwrap_or(0))
             .unwrap_or(0),
         bcd_usb: read("bcdUSB"),
         serial: read("serial")

@@ -197,6 +197,7 @@ pub(crate) struct PortSnapshot {
     pub bcd_usb: u16,
     /// Raw `USB_DEVICE_SPEED` code from `_EX`.
     pub speed_code: u8,
+    #[allow(dead_code)] // kept for parity with Linux PortSnapshot; consumed in Phase 8
     pub is_hub: bool,
     pub protocols: Option<u32>,
     pub capabilities: Option<u32>,
@@ -260,7 +261,13 @@ mod win {
                 None,
                 None,
                 DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
-            )?;
+            )
+            .map_err(|e| {
+                BackendError::os_api(
+                    crate::BACKEND_NAME,
+                    format!("SetupDiGetClassDevsW(HUB): {e}"),
+                )
+            })?;
 
             for index in 0..u32::MAX {
                 let mut dia = SP_DEVICE_INTERFACE_DATA::default();
@@ -298,7 +305,7 @@ mod win {
                     continue;
                 }
                 let wide = std::slice::from_raw_parts(
-                    (*detail).szdevicepath.as_ptr(),
+                    (*detail).DevicePath.as_ptr(),
                     (required as usize - std::mem::size_of::<u32>()) / 2,
                 );
                 if let Some(p) = decode_utf16(wide) {
@@ -423,6 +430,7 @@ mod win {
                         64,
                     )
                     .ok()
+                    .as_deref()
                     .and_then(parse_conn_v2);
 
                 walk.ports.push(PortSnapshot {

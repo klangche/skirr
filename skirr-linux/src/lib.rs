@@ -13,6 +13,7 @@ mod monitor;
 pub mod native;
 pub mod speeds;
 pub mod topology;
+pub mod usb_c;
 
 pub use backend::{create_backend, SkirrLinuxBackend};
 

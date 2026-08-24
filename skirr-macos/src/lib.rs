@@ -7,10 +7,12 @@
 //! normalization layers compile everywhere so tests run on any host.
 
 mod backend;
+pub mod displays;
 mod hotplug;
 mod native;
 mod speeds;
 mod topology;
+pub mod usb_c;
 
 /// Version marker for the macOS backend.
 pub const BACKEND_NAME: &str = "skirr-macos";

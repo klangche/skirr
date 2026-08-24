@@ -59,6 +59,7 @@ impl UsbBackend for SkirrLinuxBackend {
             if let Ok(displays) = drm::enumerate_displays() {
                 topo.displays = displays;
             }
+            attach_type_c_info(&mut topo);
             Ok(topo)
         }
         #[cfg(not(target_os = "linux"))]
@@ -118,7 +119,8 @@ fn pci_by_bus() -> HashMap<u8, String> {
             let Some(bus) = bus else { continue };
             // Symlink target contains .../pci0000:00/0000:00:14.0/usb3
             if let Ok(target) = fs::read_link(entry.path()) {
-                let segs: Vec<&str> = target.to_string_lossy().split('/').collect();
+                let target_str = target.to_string_lossy().into_owned();
+                let segs: Vec<&str> = target_str.split('/').collect();
                 if let Some(pos) = segs.iter().position(|s| s.starts_with("usb")) {
                     if pos >= 1 {
                         let pci = segs[pos - 1];
@@ -143,7 +145,6 @@ fn pci_by_bus() -> HashMap<u8, String> {
 fn platform_info_impl() -> BackendResult<PlatformInfo> {
     use std::fs;
 
-    const BACKEND: &str = "skirr-linux";
     let read = |path: &str| fs::read_to_string(path).ok();
 
     let os_pretty = read("/etc/os-release")
@@ -189,7 +190,7 @@ fn platform_info_impl() -> BackendResult<PlatformInfo> {
                     .find(|l| l.starts_with("btime "))
                     .and_then(|l| l.split_whitespace().nth(1)?.parse::<i64>().ok())
             })
-            .map(chrono::DateTime::from_timestamp),
+            .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0)),
     })
 }
 
@@ -205,6 +206,58 @@ fn platform_info_impl() -> BackendResult<PlatformInfo> {
 pub fn create_backend() -> SkirrLinuxBackend {
     SkirrLinuxBackend::new()
 }
+
+/// Correlate `/sys/class/typec` ports onto devices by syspath ancestry and
+/// stamp `usb_c_info`. Purely additive: devices with no Type-C evidence are
+/// left untouched (absence = no claim, per DATA_MAP §5 philosophy).
+#[cfg(target_os = "linux")]
+fn attach_type_c_info(topo: &mut SystemTopology) {
+    use crate::usb_c;
+    use std::fs;
+
+    let Ok(typec_ports) = usb_c::enumerate_typec_ports() else {
+        return;
+    };
+    if typec_ports.is_empty() {
+        return;
+    }
+
+    for dev in &mut topo.devices {
+        // The device's sysfs dir name is its location (`3-2.1`); find the
+        // canonical path under /sys/devices to test ancestry against.
+        let syspath = fs::canonicalize(format!(
+            "/sys/bus/usb/devices/{}",
+            dev.properties
+                .get("sysfs_name")
+                .map(String::as_str)
+                .unwrap_or_default()
+        ));
+        let Ok(usb_path) = syspath else { continue };
+        let usb_path = usb_path.to_string_lossy().to_string();
+
+        for (attrs, port_path) in &typec_ports {
+            if port_path.is_empty() || !usb_c::usb_path_under_typec_port(&usb_path, port_path) {
+                continue;
+            }
+            let mut info = usb_c::build_port_info(attrs);
+            // Partner alt modes when present.
+            if let Ok(entries) = fs::read_dir(format!("/sys/class/typec/{}/partner", attrs.name)) {
+                let names: Vec<String> = entries
+                    .flatten()
+                    .filter_map(|e| e.file_name().to_str().map(String::from))
+                    .collect();
+                info.alt_modes = usb_c::alt_modes_from_partner(&names);
+            }
+            info.pd_supported = matches!(info.current_mode, skirr_core::UsbCCurrentMode::UsbPd);
+            dev.usb_c_info = Some(info);
+            break;
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn attach_type_c_info(_topo: &mut SystemTopology) {}
 
 #[cfg(test)]
 mod tests {
