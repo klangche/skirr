@@ -225,6 +225,7 @@ CI must build all four artifacts on every release tag.
 - [x] JSON output (--json flag)
 - [x] Structured diagnostic output (FACT/RULE/VERDICT)
 - [x] Color-coded PASS/WARNING/FAIL
+- [x] Per-port chain topology view *(user-directed addition, 2026-08-24: `render_tree` split into INTERNAL (controllers/root hubs/integrated devices) vs EXTERNAL sections; external devices render as one chain per occupied physical port — every hub level inside a dock shown with tree glyphs, VID:PID, link speed, hub port count and dock family, so the culprit product in a long chain is identifiable at a glance; free ports listed; children sorted by port; 2 new tests incl. dock-with-sub-hub fixture)*
 - **Progress: 100%**
 - **Notes**: Rendering fully refactored to pure data-in/String-out fns in `render.rs` (7 tests). Device table now `tabled` (Style::blank, Tabled derive row struct). New `format_diagnosis()` renders Shoko-style FACT/RULE/VERDICT plus BOTTLENECKS (severity-colored Minor/Major/Critical), ISSUES (topology/display/USBC/power), and RECOMMENDATIONS sections; empty sections omitted (tested). Verdict tags color-coded via `colored` — PASS green / WARNING yellow / FAIL red+bold / UNKNOWN dim; auto-disables under NO_COLOR and non-TTY (tests force-disable for plain-text assertions). Tree marks hubs bold. `--json` verified on scan/usb/topology/hubs/ports/diagnose. Spinner skipped: enumeration is fast (<200 ms) and headless-safety outweighs polish — revisit only if a backend gets slow.
 
@@ -365,7 +366,7 @@ CI must build all four artifacts on every release tag.
 - **Notes**: All correlation logic lives in skirr-core (7 new tests: subtree collapse, pass-through, flap threshold + window expiry, summary counts, perfect session, undrained-hub flush). CLI monitor consumes it live against the current topology snapshot; verified end-to-end on dev host (`--duration 2 --interval 200` → "0 event(s)... stability 100/100"). 149 tests workspace-wide.
 
 ### 8.2 JSON Export
-- [ ] Schema matching Section 21
+- [~] Schema matching Section 21
 - [ ] All sections: platform, controllers, devices, hubs, topology, displays, usb_c, thunderbolt, usb4, events, diagnostics, rules
 - [ ] Pretty-print and compact options
 - **Progress: 0%**
@@ -520,13 +521,16 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 8.1 - Live Monitoring Enhancement
-**Action**: Upgrade hotplug monitoring from raw events to correlated, stability-aware streams:
-- Configurable monitoring duration: CLI `monitor --duration <secs>` (currently Ctrl-C only); poll interval flag too (`--interval <ms>`), validated against backend minimums
-- Event correlation: re-enumeration chains — when a hub disconnects, its subtree produces N disconnect events; correlate into one logical "hub removal" event with child count (match by parent_id/instance prefix in skirr-core::hotplug diff logic or a new core correlator consuming DiagnosticEvents)
-- Stability scoring: flapping detection — device connecting/disconnecting repeatedly within a window ⇒ `properties["flap_count"]` / stability score in event summary; feed a fact for the rule engine (check Profile rules for an existing instability rule first)
-- Keep all pure logic in skirr-core (testable on every host); backends only produce raw diffs as today
-**Verify locally**: correlator unit tests (synthetic event sequences: single plug, hub-with-children removal, flapper); live monitor smoke test on dev host (empty bus must still work)
-**Reference**: skirr-{linux}/src/{hotplug,monitor}.rs patterns from Phase 6; skirr-core/src/model.rs DiagnosticEvent/EventSummary
+**Current**: Phase 8.2 - JSON Export
+**Action**: Make `skirr report` / `--json` output match the canonical schema (docs/DATA_MAP.md Section 21 — verify exact section list there):
+- Audit current `report` JSON keys vs Section 21; fill gaps: displays, usb_c, thunderbolt, usb4, events, rules sections likely incomplete or missing
+- All sections must serialize even when empty (explicit absence vs null policy: keep serde defaults, document in schema)
+- Add `--compact` flag for minified output alongside pretty default
+- Version the payload (`"schema_version": "1.0"`) so consumers can pin
+- Consider `skirr scan --json` parity check: same topology section shape as report
+**Verify locally**: round-trip test — deserialize a generated report back into typed structs (serde), assert key sections present; live run on dev host
+**Reference**: docs/DATA_MAP.md §21; skirr-cli/src/main.rs cmd_report; skirr-core/src/model.rs serde derives (already #[derive(Serialize)])
 ---
-*Last updated: 2026-08-24 | Phase 7 COMPLETE (USB-C + displays + docks; cross-target verification); next agent: Phase 8.1*
+---
+*Last updated: 2026-08-24 | User-directed: topology per-port chain view (internal/external split, dock hub levels) + README restructure (macOS quarantine-only first launch, Windows "portable" wording dropped, CLI usage section removed — CLI is internal/troubleshooting). Phase 8.2 JSON Export still next.*
+---

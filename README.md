@@ -11,49 +11,93 @@ MVP feature-complete on **macOS** (Apple Silicon live-tested) and **Windows**
 (code-complete, runner review pending). Linux and the GUI are on the roadmap —
 see [SKIRR_PLANNER.md](SKIRR_PLANNER.md).
 
-## Build
+## How it works
 
-```sh
-cargo build --release -p skirr-cli
-./target/release/skirr --help
+Each platform backend collects raw facts through the OS's own APIs; everything
+downstream of that is shared, platform-independent logic.
+
+```mermaid
+flowchart LR
+    subgraph OS["Operating system"]
+        MAC["macOS<br/>IOKit · IODisplayConnect"]
+        WIN["Windows<br/>CfgMgr · SetupAPI · WMI"]
+        LIN["Linux<br/>sysfs · DRM"]
+    end
+
+    subgraph CORE["skirr-core"]
+        COLLECT["Topology collector<br/>controllers → root hubs → devices<br/>hubs · ports · speeds"]
+        EDID["EDID parser<br/>resolutions · HDR"]
+        USBC["USB-C / PD reader"]
+        DOCKS["Dock annotator<br/>families · roles"]
+        EVENTS["Hotplug events<br/>correlation · stability score"]
+        RULES["Rule engine<br/>+ rule profiles"]
+    end
+
+    subgraph OUT["Results"]
+        TREE["Per-port chain view<br/>internal vs external"]
+        VERDICT["Verdict<br/>PASS / WARNING / FAIL"]
+        REPORT["JSON report"]
+    end
+
+    MAC --> COLLECT
+    WIN --> COLLECT
+    LIN --> COLLECT
+    COLLECT --> EDID --> RULES
+    COLLECT --> USBC --> RULES
+    COLLECT --> DOCKS
+    COLLECT --> EVENTS
+    RULES --> VERDICT
+    EVENTS --> TREE
+    DOCKS --> TREE
+    COLLECT --> TREE
+    RULES --> REPORT
 ```
 
-## Usage
+External devices are rendered **per physical port**: whatever you plug into a
+port starts one chain that continues through every hub inside a dock, so the
+product causing trouble in a long chain is visible at a glance:
 
-```sh
-skirr scan       # platform info + every USB device
-skirr topology   # tree with hops/tiers
-skirr hubs       # hub port mapping
-skirr ports      # occupied ports
-skirr diagnose   # rule-engine verdict (exit 1 = FAIL findings)
-skirr monitor    # live hotplug events (Ctrl-C to stop)
-skirr report     # JSON report of the current state
+```text
+EXTERNAL
+RootHub BUS_1 (on xHCI, 6 ports)
+  Port 4 ── CalDigit Dock (2109:0102) [HUB 4p] [5000 Mbps]
+  │ ├─ p2 Dock Sub-Hub (2109:0817) [HUB 3p] [480 Mbps]
+  │ │ ├─ p1 Keyboard (05AC:0234) [1.5 Mbps]
+  │ │ └─ p4 Camera (046D:0825) [480 Mbps]
+  │ └─ p3 Flash Drive (0781:5583) [5000 Mbps]
+  Ports free: 1, 2, 3, 5, 6
 ```
 
-Global flags: `--json` for machine-readable output, `--profile <FILE>` for a
-custom rule profile (defaults to Skirr Standard Profile v1.0).
+## Install
 
-## First launch: Gatekeeper & SmartScreen
+Grab the artifact for your platform from the latest release:
 
-Prebuilt binaries are currently **unsigned**, so the OS asks for confirmation
-exactly once per app.
+| OS | Arch | Artifact |
+|----|------|----------|
+| Windows | x64 | `.zip` (`skirr.exe`) |
+| macOS | ARM64 (Apple Silicon) | `.dmg` (`Skirr.app`) |
+| macOS | x64 (Intel) | `.dmg` (`Skirr.app`) |
+| Ubuntu 22.04 | x86_64 | `.deb` (`/usr/bin/skirr`) |
+
+Each artifact ships with a SHA-256 checksum file.
+
+## First launch
+
+Builds are currently unsigned/notarization-pending, so the OS asks for
+confirmation exactly once per app.
 
 ### macOS
 
-1. Drag `Skirr.app` from the DMG into **Applications**.
-2. On first launch you may see *"Skirr can't be opened because Apple cannot
-   check it for malicious software."* Right-click `Skirr.app` → **Open** →
-   **Open** again to confirm.
-3. Alternatively use **System Settings → Privacy & Security** and click
-   **Open Anyway** at the bottom.
-4. CLI-only alternative, no prompts:
-   ```sh
-   /Applications/Skirr.app/Contents/MacOS/skirr scan
-   ```
-   If the binary was quarantined after download, clear the flag first:
-   ```sh
-   xattr -d com.apple.quarantine /Applications/Skirr.app
-   ```
+Downloads made through a browser carry the Gatekeeper quarantine flag. Clear
+it once after copying `Skirr.app` into Applications:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Skirr.app
+```
+
+Or without Terminal: double-click `Skirr.app`, then open **System Settings →
+Privacy & Security**, scroll to the *Security* section and click **Open
+Anyway** next to the Skirr message.
 
 ### Windows (SmartScreen)
 
@@ -61,22 +105,7 @@ exactly once per app.
 2. Click **More info** → **Run anyway**.
 3. The prompt appears once; afterwards the exe starts normally.
 
-Both flows only appear because builds are not notarized/signed yet. Once code
-signing certificates are in place this section shrinks to nothing.
-
-## Releases
-
-Tagging `v*` triggers [.github/workflows/release.yml](.github/workflows/release.yml),
-which builds and attaches:
-
-| OS | Arch | Artifact |
-|----|------|----------|
-| Windows | x64 | portable `.zip` (`skirr.exe`) |
-| macOS | ARM64 (Apple Silicon) | `.dmg` (`Skirr.app`) |
-| macOS | x64 (Intel) | `.dmg` (`Skirr.app`) |
-| Ubuntu 22.04 | x86_64 | `.deb` (`/usr/bin/skirr`) |
-
-Each artifact ships with a SHA-256 checksum file.
+Both flows disappear once code signing certificates are in place.
 
 ## Documentation
 
