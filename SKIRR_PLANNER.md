@@ -1,0 +1,462 @@
+# Skirr Project Planner
+
+**Overall Progress: 0%**
+
+---
+
+## Project Origin & Philosophy
+
+Skirr is a **cross-platform USB analysis tool**, modeled on the philosophy of
+[ProAV Shoko](https://github.com/klangche/klangche-proav-shoko) (local reference clone:
+`~/Documents/GitHub/klangche-proav-shoko`). Skirr is the Rust rewrite of that concept.
+
+**Core philosophy copied from ProAV Shoko:**
+
+- **Analyze, verify, troubleshoot USB connections** in meeting rooms / BYOD / ProAV environments
+- **Scan** all connected USB devices and build the **hierarchical USB tree**
+- Calculate **hops** (levels in chain), **tiers** (depth), and count external hubs
+- Assess **stability from chain length** using per-platform limits (Apple Silicon is stricter than Windows/Intel — internal Thunderbolt hub costs 1 tier)
+- Show **connected displays** with resolution/connection path
+- Generate **professional reports** (HTML; Shoko also does PDF) with topology diagrams
+- **No admin/sudo required** for core functionality; degrade gracefully and say what is unknown
+- Audience: AV technicians, IT support, sales, diagnostics teams
+
+**Per-platform stability limits** (from Shoko's `src/assets/usb_data.csv`):
+
+| System | max_hops | max_tiers | max_hubs |
+|--------|----------|-----------|----------|
+| Windows x86/ARM | 7 | 7 | 5 |
+| macOS Intel | 7 | 7 | 5 |
+| macOS Apple Silicon | 6 | 6 | 4 |
+| Linux x86 | 7 | 7 | 5 |
+| Linux ARM | 6 | 6 | 4 |
+
+These become the default "Skirr Standard Profile v1.0" rules (Phase 1.3).
+
+**Project tree is fixed as the owner wants it:** Cargo workspace with
+`skirr-core`, `skirr-windows`, `skirr-macos`, `skirr-linux`, `skirr-cli`, `skirr-gui`.
+Do not restructure.
+
+## Release Targets (mandatory)
+
+| OS | Arch | Artifact |
+|----|------|----------|
+| Windows | x64 | `.exe` (portable) |
+| macOS (Apple Silicon) | ARM64 | `.dmg` |
+| macOS (Intel) | x64 | `.dmg` |
+| Ubuntu 22.04 | x86_64 | `.deb` |
+
+CI must build all four artifacts on every release tag.
+
+---
+
+## Legend
+- `[ ]` = Not started
+- `[~]` = In progress
+- `[x]` = Completed
+- `🔴` = Blocked
+- `🟡` = Needs review
+- `🟢` = Ready for next agent
+
+---
+
+## Phase 0: Project Setup & Data Map (Prerequisite)
+
+### 0.1 Initialize Rust Workspace
+- [ ] Create Cargo workspace structure
+- [ ] Add core crates: `skirr-core`, `skirr-windows`, `skirr-macos`, `skirr-linux`, `skirr-cli`
+- [ ] Configure Cargo.toml with dependencies (tauri, serde, thiserror, etc.)
+- [ ] Set up GitHub Actions matrix build: `windows-latest` (x64 .exe), `macos-14` (ARM64 .dmg), `macos-13` (Intel x64 .dmg), `ubuntu-22.04` (x86_64 .deb)
+- **Progress: 0%**
+
+### 0.2 Create Skirr Data Map (Section 27)
+- [ ] Document VID/PID retrieval per OS
+- [ ] Document Parent/Child/Hub topology per OS
+- [ ] Document Port enumeration per OS
+- [ ] Document Current/Max USB speed per OS
+- [ ] Document USB-C capabilities per OS
+- [ ] Document USB-PD information per OS
+- [ ] Document EDID/Display retrieval per OS
+- [ ] Document Thunderbolt/USB4 per OS
+- [ ] Document Hotplug monitoring per OS
+- [ ] Mark Admin/Driver requirements per datapoint
+- [ ] Assign confidence scores per datapoint
+- **Progress: 0%**
+
+---
+
+## Phase 1: MVP - Core Data Model & Normalization
+
+### 1.1 Define Common Data Model (skirr-core)
+- [ ] Device struct (VID, PID, manufacturer, product, serial, class, subclass, protocol)
+- [ ] Hub struct (ports, children, parent, depth)
+- [ ] Topology struct (host controllers, root hubs, tree)
+- [ ] Speed struct (max_supported, current_link, bottleneck)
+- [ ] Display struct (EDID, resolution, refresh, physical size, connection path)
+- [ ] USB-C struct (capability, alt_mode, power, thunderbolt, usb4)
+- [ ] DiagnosticEvent struct (timestamp, type, device_id, details)
+- [ ] Fact/Rule/Verdict structs for rule engine
+- [ ] Profile struct (version, rules, limits)
+- **Progress: 0%**
+
+### 1.2 Implement Normalization Traits
+- [ ] `UsbBackend` trait (enumerate, get_topology, get_speeds, monitor)
+- [ ] `DisplayBackend` trait (enumerate_displays, get_edid)
+- [ ] `UsbCBackend` trait (get_capabilities, get_power, get_thunderbolt)
+- [ ] `HotplugBackend` trait (start_monitoring, stop_monitoring, events)
+- [ ] Error types for each backend
+- **Progress: 0%**
+
+### 1.3 Rule Engine Implementation
+- [ ] Profile loader (TOML/JSON)
+- [ ] Fact collector from normalized model
+- [ ] Rule evaluator (max hubs, max hops, max tiers, min speed, etc.)
+- [ ] Verdict generator (PASS/WARNING/FAIL)
+- [ ] Explanation formatter (FACT/RULE/VERDICT output)
+- [ ] Default "Skirr Standard Profile v1.0" — port Shoko's `usb_data.csv` limits (see table above)
+- **Progress: 0%**
+
+---
+
+## Phase 2: MVP - Windows Backend (skirr-windows)
+
+### 2.1 PnP/SetupAPI Enumeration
+- [ ] Enumerate all USB devices via SetupAPI
+- [ ] Extract VID, PID, manufacturer, product, serial
+- [ ] Get device class/subclass/protocol
+- [ ] Get device descriptor information
+- **Progress: 0%**
+
+### 2.2 Topology Construction
+- [ ] Build parent/child relationships via PnP device tree
+- [ ] Identify host controllers and root hubs
+- [ ] Map hub ports to children
+- [ ] Calculate depth, hops, tiers per device
+- **Progress: 0%**
+
+### 2.3 USB Speed Detection
+- [ ] Implement IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX
+- [ ] Implement IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2
+- [ ] Handle admin vs non-admin speed data
+- [ ] Detect current link speed vs capability
+- **Progress: 0%**
+
+### 2.4 Hotplug Monitoring
+- [ ] Register for WM_DEVICECHANGE notifications
+- [ ] Track device arrival/removal/re-enumeration
+- [ ] Emit normalized events
+- **Progress: 0%**
+
+---
+
+## Phase 3: MVP - macOS Backend (skirr-macos)
+
+### 3.1 IOKit/IORegistry Enumeration
+- [ ] Enumerate USB devices via IOKit
+- [ ] Extract VID, PID, manufacturer, product, serial
+- [ ] Get device class/subclass/protocol
+- [ ] Get device descriptor information
+- [ ] system_profiler fallback for cross-check
+- **Progress: 0%**
+
+### 3.2 Topology Construction
+- [ ] Build parent/child relationships via IORegistry
+- [ ] Identify host controllers and root hubs
+- [ ] Map hub ports to children
+- [ ] Calculate depth, hops, tiers per device
+- **Progress: 0%**
+
+### 3.3 USB Speed Detection
+- [ ] Get max supported speed from device properties
+- [ ] Get current negotiated link speed
+- [ ] Detect bottlenecks (USB 3 device on USB 2 port)
+- **Progress: 0%**
+
+### 3.4 Hotplug Monitoring
+- [ ] IONotificationPortCreate for USB notifications
+- [ ] Track device arrival/removal/re-enumeration
+- [ ] Emit normalized events
+- **Progress: 0%**
+
+---
+
+## Phase 4: MVP - CLI (skirr-cli)
+
+### 4.1 Command Structure
+- [ ] `skirr scan` - full enumeration output
+- [ ] `skirr usb` - USB devices only
+- [ ] `skirr topology` - tree view with hops/tiers
+- [ ] `skirr hubs` - hub details with port mapping
+- [ ] `skirr ports` - port-level details
+- [ ] `skirr diagnose` - run rule engine, show verdict
+- [ ] `skirr monitor` - live hotplug monitoring
+- [ ] `skirr report` - generate JSON/HTML report
+- **Progress: 0%**
+
+### 4.2 Output Formatting
+- [ ] Human-readable table output
+- [ ] JSON output (--json flag)
+- [ ] Structured diagnostic output (FACT/RULE/VERDICT)
+- [ ] Color-coded PASS/WARNING/FAIL
+- **Progress: 0%**
+
+### 4.3 CLI Integration
+- [ ] Backend selection (auto-detect OS)
+- [ ] Profile selection (--profile flag)
+- [ ] Monitoring duration (--duration flag)
+- [ ] Output file (--output flag)
+- **Progress: 0%**
+
+---
+
+## Phase 5: MVP - Distribution & Documentation
+
+### 5.1 Build & Release Pipeline
+- [ ] GitHub Actions workflow for 4-target matrix (see Release Targets above)
+- [ ] Windows x64: portable `.exe` (no installer)
+- [ ] macOS ARM64 (Apple Silicon): `.app` bundle → `.dmg` (with /Applications symlink + how-to-run note, like Shoko's DMG)
+- [ ] macOS Intel x64: separate `.app` bundle → `.dmg`
+- [ ] Ubuntu 22.04 x86_64: `.deb` package (binary in /usr/bin, desktop entry if GUI ships)
+- [ ] Smoke test each artifact on CI runners (`--help`/CLI mode; USB-less runners tolerated, like Shoko)
+- [ ] Automatic release on tag push with all 4 artifacts attached
+- [ ] Checksums and signatures (optional)
+- **Progress: 0%**
+
+### 5.2 Gatekeeper/SmartScreen Documentation
+- [ ] macOS: "Open Anyway" flow documentation
+- [ ] Windows: "Run anyway" flow documentation
+- [ ] In-app first-run guide
+- [ ] Support page / README instructions
+- **Progress: 0%**
+
+### 5.3 MVP Verification
+- [ ] Run on Windows x64 (admin + non-admin)
+- [ ] Run on macOS ARM64 (Apple Silicon) + macOS x64 (Intel)
+- [ ] Run on Ubuntu 22.04
+- [ ] Verify topology matches system_profiler/Device Manager
+- [ ] Verify speed detection accuracy
+- [ ] Verify rule engine produces correct verdicts
+- [ ] Verify CLI commands all work
+- [ ] Verify JSON output schema matches spec
+- **Progress: 0%**
+
+---
+
+## Phase 6: P1 - Linux Backend (skirr-linux)
+
+### 6.1 sysfs/libusb Enumeration
+- [ ] Parse /sys/bus/usb/devices/ for device tree
+- [ ] libusb fallback for missing sysfs data
+- [ ] Extract VID, PID, manufacturer, product, serial
+- [ ] Get device class/subclass/protocol
+- **Progress: 0%**
+
+### 6.2 Topology Construction
+- [ ] Build parent/child from sysfs symlinks
+- [ ] Identify host controllers and root hubs
+- [ ] Map hub ports to children
+- [ ] Calculate depth, hops, tiers
+- **Progress: 0%**
+
+### 6.3 USB Speed Detection
+- [ ] Read max speed from sysfs (speed file)
+- [ ] Read current speed from sysfs
+- [ ] libusb for detailed capability
+- **Progress: 0%**
+
+### 6.4 Hotplug Monitoring
+- [ ] udev monitor for USB events
+- [ ] Track device arrival/removal/re-enumeration
+- [ ] Emit normalized events
+- **Progress: 0%**
+
+### 6.5 Display/EDID on Linux
+- [ ] DRM/KMS for display enumeration
+- [ ] EDID parsing
+- [ ] Connection path correlation with USB topology
+- **Progress: 0%**
+
+---
+
+## Phase 7: P1 - USB-C & Display Diagnostics
+
+### 7.1 USB-C Capabilities (All Platforms)
+- [ ] Detect USB-C ports vs USB-A
+- [ ] DisplayPort Alt Mode detection
+- [ ] USB4/Thunderbolt detection (where exposed)
+- [ ] Power Delivery info (where exposed)
+- [ ] "Unknown" with reason when not exposed
+- **Progress: 0%**
+
+### 7.2 Display Diagnostics (All Platforms)
+- [ ] Windows: EnumDisplayDevices + EDID
+- [ ] macOS: IOKit display services + EDID
+- [ ] Linux: DRM/KMS + EDID
+- [ ] Correlation: display → GPU → USB path (dock/hub)
+- [ ] HDR detection where available
+- **Progress: 0%**
+
+### 7.3 Dock Analysis
+- [ ] Identify known dock VID/PIDs
+- [ ] Map dock internal hub topology
+- [ ] Port mapping (which port = video, which = data, etc.)
+- [ ] Power delivery from dock
+- **Progress: 0%**
+
+---
+
+## Phase 8: P1 - Live Monitoring & Reports
+
+### 8.1 Live Monitoring Enhancement
+- [ ] Configurable monitoring duration
+- [ ] Event correlation (re-enumeration chains)
+- [ ] Stability scoring (flapping detection)
+- [ ] Summary statistics
+- **Progress: 0%**
+
+### 8.2 JSON Export
+- [ ] Schema matching Section 21
+- [ ] All sections: platform, controllers, devices, hubs, topology, displays, usb_c, thunderbolt, usb4, events, diagnostics, rules
+- [ ] Pretty-print and compact options
+- **Progress: 0%**
+
+### 8.3 HTML Report Generator
+- [ ] report.html with embedded CSS/JS
+- [ ] Interactive topology tree
+- [ ] Speed bottleneck visualization
+- [ ] Event timeline
+- [ ] PASS/WARNING/FAIL summary
+- [ ] Zip bundle (report.html + all .json files)
+- **Progress: 0%**
+
+---
+
+## Phase 9: P1 - Tauri GUI (skirr-gui)
+
+### 9.1 Project Setup
+- [ ] Tauri 2.x project structure
+- [ ] Connect to skirr-core via Rust commands
+- [ ] Basic window + menu
+- **Progress: 0%**
+
+### 9.2 Main Views
+- [ ] System overview (platform, USB summary)
+- [ ] Topology tree view (expandable)
+- [ ] Hub details (port map)
+- [ ] Device details (speed, capabilities)
+- [ ] USB-C / Thunderbolt / USB4 panel
+- [ ] Displays panel
+- [ ] Live monitoring view
+- [ ] Diagnostics/Results view
+- [ ] Export report button
+- **Progress: 0%**
+
+### 9.3 GUI Polish
+- [ ] Dark/light theme
+- [ ] Responsive layout
+- [ ] Loading states
+- [ ] Error handling UI
+- [ ] First-run Gatekeeper guide
+- **Progress: 0%**
+
+---
+
+## Phase 10: P2 - Advanced Features
+
+### 10.1 Thunderbolt/USB4 Deep Dive
+- [ ] Thunderbolt topology (separate from USB)
+- [ ] USB4 router detection
+- [ ] Bandwidth allocation analysis
+- [ ] Thunderbolt security levels
+- **Progress: 0%**
+
+### 10.2 Power Analysis
+- [ ] USB-PD negotiation details
+- [ ] CC state detection
+- [ ] Cable capability (E-marker)
+- [ ] Power role (source/sink/DRP)
+- **Progress: 0%**
+
+### 10.3 Bandwidth Analysis
+- [ ] Calculate available vs used bandwidth
+- [ ] Display bandwidth requirements
+- [ ] Hub bottleneck identification
+- [ ] Multi-display bandwidth planning
+- **Progress: 0%**
+
+### 10.4 Advanced Event Correlation
+- [ ] Root cause analysis for re-enumerations
+- [ ] Pattern detection (periodic drops)
+- [ ] Correlation with display events
+- [ ] Export timeline for support
+- **Progress: 0%**
+
+---
+
+## Phase 11: P3 - Hardware-Specific Details
+
+### 11.1 USB-PD Deep Details
+- [ ] PDO/APDO parsing
+- [ ] Voltage/current negotiation history
+- [ ] Cable wattage limits
+- [ ] PPS support detection
+- **Progress: 0%**
+
+### 11.2 Cable & Connector Details
+- [ ] Cable VID/PID (E-marker)
+- [ ] Cable USB version/speed rating
+- [ ] Connector orientation (CC1/CC2)
+- [ ] Physical port identification
+- **Progress: 0%**
+
+### 11.3 Advanced Error Counters
+- [ ] Link error counts (where exposed)
+- [ ] Retry counters
+- [ ] CRC error rates
+- [ ] LTSSM state tracking
+- **Progress: 0%**
+
+---
+
+## Current Status Summary
+
+| Phase | Name | Progress | Status |
+|-------|------|----------|--------|
+| 0 | Project Setup & Data Map | 0% | [ ] Not started |
+| 1 | Core Data Model & Normalization | 0% | [ ] Not started |
+| 2 | Windows Backend | 0% | [ ] Not started |
+| 3 | macOS Backend | 0% | [ ] Not started |
+| 4 | CLI | 0% | [ ] Not started |
+| 5 | Distribution & Documentation | 0% | [ ] Not started |
+| 6 | Linux Backend | 0% | [ ] Not started |
+| 7 | USB-C & Display Diagnostics | 0% | [ ] Not started |
+| 8 | Live Monitoring & Reports | 0% | [ ] Not started |
+| 9 | Tauri GUI | 0% | [ ] Not started |
+| 10 | Advanced Features (P2) | 0% | [ ] Not started |
+| 11 | Hardware Details (P3) | 0% | [ ] Not started |
+
+**Total Project Progress: 0%**
+
+---
+
+## Agent Coordination Rules
+
+1. **One task at a time**: Pick the first `[ ]` task in order, mark `[~]`, complete, mark `[x]`
+2. **Update progress**: After each task, update the phase progress percentage and total project progress
+3. **Document blockers**: If blocked, mark `🔴` and add note in task
+4. **Handoff ready**: When task is `[x]`, next agent can pick up next `[ ]`
+5. **Never skip**: Tasks must be done in order within a phase (dependencies)
+6. **Cross-phase**: Phase N+1 cannot start until Phase N is 100%
+
+---
+
+## Next Task for Agent
+
+**Current**: Phase 0.1 - Initialize Rust Workspace
+**Action**: Create Cargo workspace with core crates
+**Files to create**: Cargo.toml (workspace), skirr-core/Cargo.toml, skirr-windows/Cargo.toml, skirr-macos/Cargo.toml, skirr-linux/Cargo.toml, skirr-cli/Cargo.toml
+**Dependencies**: tauri, serde, thiserror, anyhow, clap, tokio (for async)
+**Reference**: Philosophy + stability limits from `~/Documents/GitHub/klangche-proav-shoko` (README.md, src/assets/usb_data.csv); keep existing workspace tree unchanged; release targets = .exe / .dmg ARM64 / .dmg x64 / .deb
+
+---
+*Last updated: 2026-08-24 | Next agent: Start with Phase 0.1*

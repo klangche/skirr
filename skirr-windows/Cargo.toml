@@ -1,0 +1,21 @@
+[package]
+name = "skirr-windows"
+version = "0.1.0"
+edition = "2021"
+description = "Windows backend for Skirr using PnP, SetupAPI, and USB IOCTL"
+license = "MIT"
+repository = "https://github.com/klangche/skirr"
+
+[dependencies]
+skirr-core = { path = "../skirr-core" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+windows = { workspace = true }
+bitflags = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[features]
+default = []

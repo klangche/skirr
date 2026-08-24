@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "skirr-core",
+    "skirr-windows",
+    "skirr-macos",
+    "skirr-linux",
+    "skirr-cli",
+    "skirr-gui",
+]
+exclude = ["skirr-gui/src-tauri"]
+
+[workspace.dependencies]
+# Core
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde", "fast-rng"] }
+bitflags = "2.0"
+indexmap = "2.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "wrap_help", "color"] }
+console = "0.15"
+colored = "2.0"
+tabled = { version = "0.16", features = ["serde"] }
+indicatif = "0.17"
+
+# Async
+tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
+async-trait = "0.1.76"
+
+# Tauri
+tauri = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-fs = "2.0"
+tauri-plugin-dialog = "2.0"
+tauri-plugin-opener = "2.0"
+
+# Windows
+windows = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_SetupApi",
+    "Win32_Devices_Properties",
+    "Win32_System_IO",
+    "Win32_Devices_Enumeration_Pnp",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_SystemServices",
+    "Win32_System_Registry",
+] }
+
+# macOS
+objc2 = { version = "0.6", features = ["Foundation", "IOKit", "CoreFoundation"] }
+objc2-foundation = "0.6"
+objc2-app-kit = "0.6"
+core-foundation = "0.9"
+iokit-sys = "0.3"
+
+# Linux
+libudev = { version = "0.8", features = ["libudev"] }
+nix = "0.28"
+drm = "0.1"
+libusb = "0.6"
+
+# Testing
+tempfile = "3.0"
+pretty_assertions = "1.0"
+rstest = "0.18"
+
+[workspace.lints]
+rust = "2021"
+workspace = true
+
+[workspace.lints.rust]
+unused_variables = "warn"
+unused_imports = "warn"
+dead_code = "warn"

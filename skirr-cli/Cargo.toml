@@ -1,0 +1,38 @@
+[package]
+name = "skirr-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line interface for Skirr USB diagnostic tool"
+license = "MIT"
+repository = "https://github.com/klangche/skirr"
+
+[[bin]]
+name = "skirr"
+path = "src/main.rs"
+
+[dependencies]
+skirr-core = { path = "../skirr-core" }
+skirr-windows = { path = "../skirr-windows", optional = true }
+skirr-macos = { path = "../skirr-macos", optional = true }
+skirr-linux = { path = "../skirr-linux", optional = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+console = { workspace = true }
+colored = { workspace = true }
+tabled = { workspace = true }
+indicatif = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+skirr-windows = { path = "../skirr-windows" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+skirr-macos = { path = "../skirr-macos" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+skirr-linux = { path = "../skirr-linux" }
+
+[features]
+default = []

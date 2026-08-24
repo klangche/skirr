@@ -1,0 +1,24 @@
+[package]
+name = "skirr-macos"
+version = "0.1.0"
+edition = "2021"
+description = "macOS backend for Skirr using IOKit/IORegistry"
+license = "MIT"
+repository = "https://github.com/klangche/skirr"
+
+[dependencies]
+skirr-core = { path = "../skirr-core" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+core-foundation = { workspace = true }
+iokit-sys = { workspace = true }
+bitflags = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[features]
+default = []
