@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 0%**
+**Overall Progress: 3%**
 
 ---
 
@@ -63,11 +63,12 @@ CI must build all four artifacts on every release tag.
 ## Phase 0: Project Setup & Data Map (Prerequisite)
 
 ### 0.1 Initialize Rust Workspace
-- [ ] Create Cargo workspace structure
-- [ ] Add core crates: `skirr-core`, `skirr-windows`, `skirr-macos`, `skirr-linux`, `skirr-cli`
-- [ ] Configure Cargo.toml with dependencies (tauri, serde, thiserror, etc.)
-- [ ] Set up GitHub Actions matrix build: `windows-latest` (x64 .exe), `macos-14` (ARM64 .dmg), `macos-13` (Intel x64 .dmg), `ubuntu-22.04` (x86_64 .deb)
-- **Progress: 0%**
+- [x] Create Cargo workspace structure
+- [x] Add core crates: `skirr-core`, `skirr-windows`, `skirr-macos`, `skirr-linux`, `skirr-cli`
+- [x] Configure Cargo.toml with dependencies (tauri, serde, thiserror, etc.)
+- [x] Set up GitHub Actions matrix build: `windows-latest` (x64 .exe), `macos-14` (ARM64 .dmg), `macos-13` (Intel x64 .dmg), `ubuntu-22.04` (x86_64 .deb)
+- **Progress: 100%**
+- **Notes**: Workspace builds green (`cargo check/clippy/fmt/test`). Fixed invalid manifest entries from initial scaffold: removed nonexistent crates/versions (`iokit-sys`, `libudev 0.8`, `libusb 0.6`, `objc2` framework features), replaced `libusb` with maintained `rusb`, bumped `drm` to 0.15, corrected `windows` crate feature name, gated platform deps behind `[target.'cfg(target_os = ...)]`, made Tauri opt-in via skirr-gui `gui` feature. CI: `.github/workflows/ci.yml`; Release matrix: `.github/workflows/release.yml`.
 
 ### 0.2 Create Skirr Data Map (Section 27)
 - [ ] Document VID/PID retrieval per OS
@@ -422,7 +423,7 @@ CI must build all four artifacts on every release tag.
 
 | Phase | Name | Progress | Status |
 |-------|------|----------|--------|
-| 0 | Project Setup & Data Map | 0% | [ ] Not started |
+| 0 | Project Setup & Data Map | 50% | [~] In progress (0.1 done) |
 | 1 | Core Data Model & Normalization | 0% | [ ] Not started |
 | 2 | Windows Backend | 0% | [ ] Not started |
 | 3 | macOS Backend | 0% | [ ] Not started |
@@ -452,11 +453,10 @@ CI must build all four artifacts on every release tag.
 
 ## Next Task for Agent
 
-**Current**: Phase 0.1 - Initialize Rust Workspace
-**Action**: Create Cargo workspace with core crates
-**Files to create**: Cargo.toml (workspace), skirr-core/Cargo.toml, skirr-windows/Cargo.toml, skirr-macos/Cargo.toml, skirr-linux/Cargo.toml, skirr-cli/Cargo.toml
-**Dependencies**: tauri, serde, thiserror, anyhow, clap, tokio (for async)
-**Reference**: Philosophy + stability limits from `~/Documents/GitHub/klangche-proav-shoko` (README.md, src/assets/usb_data.csv); keep existing workspace tree unchanged; release targets = .exe / .dmg ARM64 / .dmg x64 / .deb
+**Current**: Phase 0.2 - Create Skirr Data Map (Section 27)
+**Action**: Document per-OS data sources for every datapoint (VID/PID, topology, ports, speeds, USB-C, PD, EDID, TB/USB4, hotplug), with admin/driver requirements and confidence scores
+**Reference**: `~/Documents/GitHub/klangche-proav-shoko` (data map section); produce as `docs/DATA_MAP.md`
+**Dependencies**: none — pure documentation task
 
 ---
-*Last updated: 2026-08-24 | Next agent: Start with Phase 0.1*
+*Last updated: 2026-08-24 | Phase 0.1 complete; next agent: start Phase 0.2*

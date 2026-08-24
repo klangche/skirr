@@ -11,10 +11,13 @@ skirr-core = { path = "../skirr-core" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+bitflags = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 libudev = { workspace = true }
 nix = { workspace = true }
-libusb = { workspace = true }
-bitflags = { workspace = true }
+drm = { workspace = true }
+rusb = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

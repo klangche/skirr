@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: skirr-windows-x64.exe
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: skirr-macos-arm64.dmg
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: skirr-macos-x64.dmg
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: skirr-linux-amd64.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build CLI (release)
+        run: cargo build --release --target ${{ matrix.target }} -p skirr-cli
+
+      - name: Package Windows portable .exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/skirr.exe" "${{ matrix.artifact }}"
+          Get-FileHash "${{ matrix.artifact }}" -Algorithm SHA256 | Out-File "${{ matrix.artifact }}.sha256"
+
+      - name: Package macOS .dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          STAGING="Skirr"
+          mkdir -p "$STAGING"
+          cp "target/${{ matrix.target }}/release/skirr" "$STAGING/"
+          printf 'Run Skirr from Terminal:\n\n  ./skirr --help\n\nmacOS may block unsigned binaries:\nSystem Settings -> Privacy & Security -> Open Anyway.\n' > "$STAGING/README.txt"
+          hdiutil create -volname Skirr -srcfolder "$STAGING" -ov -format UDZO "${{ matrix.artifact }}"
+          shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+
+      - name: Package Linux .deb
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p pkg/DEBIAN pkg/usr/bin
+          cp "target/${{ matrix.target }}/release/skirr" pkg/usr/bin/
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > pkg/DEBIAN/control <<EOF
+          Package: skirr
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Skirr <noreply@github.com>
+          Description: Cross-platform USB analysis tool
+           Scans connected USB devices, builds the hierarchical USB tree,
+           and diagnoses chain-length stability issues.
+          EOF
+          dpkg-deb --build pkg "${{ matrix.artifact }}"
+          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.exe
+            *.dmg
+            *.deb
+            *.sha256

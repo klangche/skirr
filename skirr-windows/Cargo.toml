@@ -11,8 +11,10 @@ skirr-core = { path = "../skirr-core" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
-windows = { workspace = true }
 bitflags = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

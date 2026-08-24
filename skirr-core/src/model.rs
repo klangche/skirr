@@ -1,8 +1,8 @@
 //! Data model for USB diagnostics - normalized across all platforms
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 /// USB device class codes (from USB spec)
@@ -158,7 +158,15 @@ impl UsbSpeed {
     }
 
     pub fn is_usb3_or_higher(&self) -> bool {
-        matches!(self, UsbSpeed::SuperSpeed | UsbSpeed::SuperSpeedPlus10 | UsbSpeed::SuperSpeedPlus20 | UsbSpeed::USB4Gen2x2 | UsbSpeed::USB4Gen3x2 | UsbSpeed::USB4Gen4x2)
+        matches!(
+            self,
+            UsbSpeed::SuperSpeed
+                | UsbSpeed::SuperSpeedPlus10
+                | UsbSpeed::SuperSpeedPlus20
+                | UsbSpeed::USB4Gen2x2
+                | UsbSpeed::USB4Gen3x2
+                | UsbSpeed::USB4Gen4x2
+        )
     }
 }
 
@@ -289,12 +297,17 @@ impl UsbDevice {
     }
 
     pub fn speed_bottleneck(&self) -> Option<SpeedBottleneck> {
-        if self.max_supported_speed > self.current_link_speed && self.current_link_speed != UsbSpeed::Unknown {
+        if self.max_supported_speed > self.current_link_speed
+            && self.current_link_speed != UsbSpeed::Unknown
+        {
             Some(SpeedBottleneck {
                 device_id: self.id,
                 max_speed: self.max_supported_speed,
                 current_speed: self.current_link_speed,
-                severity: BottleneckSeverity::from_speeds(self.max_supported_speed, self.current_link_speed),
+                severity: BottleneckSeverity::from_speeds(
+                    self.max_supported_speed,
+                    self.current_link_speed,
+                ),
             })
         } else {
             None
@@ -322,13 +335,13 @@ impl BottleneckSeverity {
     pub fn from_speeds(max: UsbSpeed, current: UsbSpeed) -> Self {
         let max_mbps = max.mbps();
         let current_mbps = current.mbps();
-        
+
         if current_mbps == 0 {
             return BottleneckSeverity::Critical;
         }
-        
+
         let ratio = max_mbps as f64 / current_mbps as f64;
-        
+
         if ratio >= 10.0 {
             BottleneckSeverity::Critical
         } else if ratio >= 2.0 {
@@ -684,7 +697,9 @@ pub enum DisplayConnectionType {
     DisplayPort,
     DVI,
     VGA,
-    USB_C,
+    /// USB-C connection
+    #[serde(rename = "USB_C")]
+    UsbC,
     Thunderbolt,
     Wireless,
     Internal,

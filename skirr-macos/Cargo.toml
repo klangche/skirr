@@ -11,11 +11,12 @@ skirr-core = { path = "../skirr-core" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
+bitflags = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }
 core-foundation = { workspace = true }
-iokit-sys = { workspace = true }
-bitflags = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
