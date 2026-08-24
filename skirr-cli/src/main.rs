@@ -1,19 +1,31 @@
 //! Skirr CLI - command-line interface for the Skirr USB diagnostic tool.
 
 use clap::Parser;
-use skirr_core::{BackendError, BackendResult, RuleEngine, SystemTopology, UsbBackend};
+use skirr_core::{BackendError, BackendResult, Profile, RuleEngine, SystemTopology, UsbBackend};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod backend;
 mod render;
 
 /// Cross-platform USB analysis tool.
 #[derive(Debug, Parser)]
-#[command(name = "skirr", version, about, long_about = None)]
+#[command(
+    name = "skirr",
+    version,
+    about,
+    long_about = None,
+    after_help = "Exit codes: 0 = ok, 1 = diagnose found FAIL verdicts, 2 = backend or input error"
+)]
 struct Cli {
     /// Emit machine-readable JSON where supported
     #[arg(long, global = true)]
     json: bool,
+
+    /// Path to a custom profile JSON (defaults to Skirr Standard Profile v1.0)
+    #[arg(long, global = true, value_name = "FILE")]
+    profile: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -48,13 +60,14 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("skirr: {err}");
+            eprintln!("{}", friendly_error(&err));
             ExitCode::from(2)
         }
     }
 }
 
 fn run(cli: Cli) -> Result<ExitCode, BackendError> {
+    let profile = load_profile(cli.profile.as_deref())?;
     let backend = backend::create_backend()?;
 
     match cli.command {
@@ -63,11 +76,44 @@ fn run(cli: Cli) -> Result<ExitCode, BackendError> {
         Command::Topology => cmd_topology(&*backend, cli.json)?,
         Command::Hubs => cmd_hubs(&*backend, cli.json)?,
         Command::Ports => cmd_ports(&*backend, cli.json)?,
-        Command::Diagnose => return cmd_diagnose(&*backend, cli.json),
+        Command::Diagnose => return cmd_diagnose(&*backend, cli.json, &profile),
         Command::Monitor => cmd_monitor(&*backend)?,
-        Command::Report { out } => cmd_report(&*backend, &out)?,
+        Command::Report { out } => cmd_report(&*backend, &out, &profile)?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Load a user-supplied profile JSON; `None` selects the built-in standard.
+pub fn load_profile(path: Option<&Path>) -> BackendResult<Profile> {
+    match path {
+        None => Ok(Profile::standard_v1()),
+        Some(path) => {
+            let body = std::fs::read_to_string(path).map_err(|e| {
+                BackendError::os_api("skirr-cli", format!("read {}: {e}", path.display()))
+            })?;
+            serde_json::from_str(&body).map_err(|e| invalid_profile(path, &e))
+        }
+    }
+}
+
+fn invalid_profile(path: &Path, e: &serde_json::Error) -> BackendError {
+    BackendError::os_api(
+        "skirr-cli",
+        format!("invalid profile {}: {e}", path.display()),
+    )
+}
+
+/// Human-facing error lines with actionable hints where the cause is known.
+fn friendly_error(err: &BackendError) -> String {
+    match err {
+        BackendError::PermissionDenied { .. } => {
+            format!("{err}\nhint: re-run elevated (sudo / admin shell), or replug the device")
+        }
+        BackendError::Unsupported { backend, .. } if *backend == "skirr-cli" => {
+            format!("{err}\nhint: skirr currently supports macOS and Windows")
+        }
+        _ => err.to_string(),
+    }
 }
 
 fn load_topology(backend: &dyn UsbBackend) -> BackendResult<SystemTopology> {
@@ -162,9 +208,13 @@ fn cmd_ports(backend: &dyn UsbBackend, json: bool) -> BackendResult<()> {
 }
 
 /// Diagnose exits 1 when the overall verdict is Fail so scripts can branch.
-fn cmd_diagnose(backend: &dyn UsbBackend, json: bool) -> Result<ExitCode, BackendError> {
+fn cmd_diagnose(
+    backend: &dyn UsbBackend,
+    json: bool,
+    profile: &Profile,
+) -> Result<ExitCode, BackendError> {
     let topo = backend.get_topology()?;
-    let result = RuleEngine::standard().evaluate(&topo);
+    let result = RuleEngine::new(profile.clone()).evaluate(&topo);
 
     if json {
         println!(
@@ -181,12 +231,33 @@ fn cmd_diagnose(backend: &dyn UsbBackend, json: bool) -> Result<ExitCode, Backen
     })
 }
 
+/// Flag set by the signal watcher so the poll loop can shut down gracefully.
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+fn install_shutdown_watcher() {
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("signal runtime");
+        rt.block_on(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                SHUTDOWN.store(true, Ordering::SeqCst);
+            }
+        });
+    });
+}
+
+fn shutdown_requested() -> bool {
+    SHUTDOWN.load(Ordering::SeqCst)
+}
+
 fn cmd_monitor(backend: &dyn UsbBackend) -> BackendResult<()> {
-    let session = backend.monitor()?;
-    let mut session = session;
+    let mut session = backend.monitor()?;
     session.start_monitoring()?;
+    install_shutdown_watcher();
     println!("Monitoring USB events - press Ctrl-C to stop.");
-    loop {
+    while !shutdown_requested() {
         match session.poll_event(std::time::Duration::from_millis(500))? {
             Some(event) => {
                 let port = event
@@ -204,15 +275,19 @@ fn cmd_monitor(backend: &dyn UsbBackend) -> BackendResult<()> {
             None => continue,
         }
     }
+    session.stop_monitoring()?;
+    println!("Monitor stopped.");
+    Ok(())
 }
 
-fn cmd_report(backend: &dyn UsbBackend, out: &std::path::Path) -> BackendResult<()> {
+fn cmd_report(backend: &dyn UsbBackend, out: &Path, profile: &Profile) -> BackendResult<()> {
     let topo = backend.get_topology()?;
-    let diagnosis = RuleEngine::standard().evaluate(&topo);
+    let diagnosis = RuleEngine::new(profile.clone()).evaluate(&topo);
 
     let report = serde_json::json!({
         "tool": "skirr",
         "generated": chrono::Utc::now().to_rfc3339(),
+        "profile": profile.name,
         "platform": topo.platform_info,
         "topology": topo,
         "diagnosis": diagnosis,
@@ -226,4 +301,64 @@ fn cmd_report(backend: &dyn UsbBackend, out: &std::path::Path) -> BackendResult<
 
 fn json_err(e: serde_json::Error) -> BackendError {
     BackendError::os_api("skirr-cli", format!("json encode: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_temp(body: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("skirr-profile-{}.json", uuid::Uuid::new_v4()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn default_profile_is_standard() {
+        let p = load_profile(None).unwrap();
+        assert_eq!(p.version, "1.0");
+        assert_eq!(p.name, Profile::standard_v1().name);
+    }
+
+    #[test]
+    fn custom_profile_round_trips() {
+        let standard = Profile::standard_v1();
+        let body = serde_json::to_string_pretty(&standard).unwrap();
+        let path = write_temp(&body);
+        let loaded = load_profile(Some(&path)).unwrap();
+        assert_eq!(loaded, standard);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn missing_file_is_clean_os_api_error() {
+        let err = load_profile(Some(Path::new("/nonexistent/skirr-profile.json"))).unwrap_err();
+        assert!(matches!(err, BackendError::OsApi { .. }));
+        assert!(err.to_string().contains("/nonexistent"));
+    }
+
+    #[test]
+    fn malformed_json_reports_path_and_cause() {
+        let path = write_temp("{ not json ");
+        let err = load_profile(Some(&path)).unwrap_err();
+        assert!(matches!(err, BackendError::OsApi { .. }));
+        assert!(err.to_string().contains("invalid profile"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn permission_errors_get_a_hint() {
+        let msg = friendly_error(&BackendError::PermissionDenied {
+            backend: "skirr-macos",
+            reason: "IOServiceOpen".into(),
+        });
+        assert!(msg.contains("hint:"), "{msg}");
+    }
+
+    #[test]
+    fn unsupported_cli_error_suggests_platforms() {
+        let msg = friendly_error(&BackendError::unsupported("skirr-cli", "no backend"));
+        assert!(msg.contains("macOS and Windows"), "{msg}");
+    }
 }

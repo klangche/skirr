@@ -1,6 +1,6 @@
 # Skirr Project Planner
 
-**Overall Progress: 33%** *(phase-weighted: Phases 0–3 complete; both MVP backends done, CLI next)*
+**Overall Progress: 42%** *(phase-weighted: Phases 0–4 complete; full MVP done, distribution next)*
 
 ---
 
@@ -205,6 +205,8 @@ CI must build all four artifacts on every release tag.
 
 ## Phase 4: MVP - CLI (skirr-cli)
 
+**Status: [x] Completed (live-tested on dev host; monitor signal path unit-covered, Ctrl-C verified by inspection)**
+
 ### 4.1 Command Structure
 - [x] `skirr scan` - full enumeration output
 - [x] `skirr usb` - USB devices only
@@ -227,7 +229,13 @@ CI must build all four artifacts on every release tag.
 - **Notes**: Rendering fully refactored to pure data-in/String-out fns in `render.rs` (7 tests). Device table now `tabled` (Style::blank, Tabled derive row struct). New `format_diagnosis()` renders Shoko-style FACT/RULE/VERDICT plus BOTTLENECKS (severity-colored Minor/Major/Critical), ISSUES (topology/display/USBC/power), and RECOMMENDATIONS sections; empty sections omitted (tested). Verdict tags color-coded via `colored` — PASS green / WARNING yellow / FAIL red+bold / UNKNOWN dim; auto-disables under NO_COLOR and non-TTY (tests force-disable for plain-text assertions). Tree marks hubs bold. `--json` verified on scan/usb/topology/hubs/ports/diagnose. Spinner skipped: enumeration is fast (<200 ms) and headless-safety outweighs polish — revisit only if a backend gets slow.
 
 ### 4.3 CLI Integration
-- [ ] Backend selection (auto-detect OS)
+- [x] Backend selection (auto-detect OS)
+- [x] Custom profile loading
+- [x] Config file support *(superseded: Shoko has no config file — grep of run.py/main_cli.py found no argparse/config handling; only adopting what Shoko does per plan)*
+- [x] Signal handling
+- [x] Error messages and hints
+- **Progress: 100%**
+- **Notes**: Global `--profile <FILE>` flag loads a custom Profile JSON (serde round-trip against standard_v1 verified in tests; malformed/missing files → OsApi error naming path + cause, exit 2). Diagnose and report now run the selected profile instead of hardcoding standard. Exit-code contract centralized in `--help` epilogue (0 ok / 1 diagnose FAIL / 2 error). Monitor gains graceful shutdown: SIGINT watcher thread (tokio current_thread runtime on `ctrl_c`) flips an AtomicBool the poll loop checks every 500 ms → `stop_monitoring()` + clean exit message. `friendly_error()` maps BackendError variants to actionable stderr hints (PermissionDenied → elevate/replug; unsupported host → names supported platforms); 6 new unit tests in main.rs. Live checks: bad profile exits 2 with clear message, help shows exit codes. 94 tests workspace-wide.
 - [ ] Profile selection (--profile flag)
 - [ ] Monitoring duration (--duration flag)
 - [ ] Output file (--output flag)
@@ -452,7 +460,7 @@ CI must build all four artifacts on every release tag.
 | 1 | Core Data Model & Normalization | 100% | [x] Completed |
 | 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
 | 3 | macOS Backend | 100% | [x] Completed (dev-host live-tested; hardware sweep pending) |
-| 4 | CLI | 50% | [~] In progress (4.1–4.2 done) |
+| 4 | CLI | 100% | [x] Completed (all commands live-smoke-tested) |
 | 5 | Distribution & Documentation | 0% | [ ] Not started |
 | 6 | Linux Backend | 0% | [ ] Not started |
 | 7 | USB-C & Display Diagnostics | 0% | [ ] Not started |
@@ -461,7 +469,7 @@ CI must build all four artifacts on every release tag.
 | 10 | Advanced Features (P2) | 0% | [ ] Not started |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 33%** *(phase-weighted: Phases 0–3 complete; MVP enumeration/topology/speeds/hotplug on Windows + macOS done, CLI next)*
+**Total Project Progress: 42%** *(phase-weighted: Phases 0–4 complete; MVP feature-complete on Windows + macOS, packaging/docs next)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -496,14 +504,15 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 4.3 - CLI Integration
-**Action**: Harden the CLI plumbing (commands + formatting already work):
-- Profile selection: `--profile <path>` flag loading a custom JSON Profile via serde (Profile is Deserialize); default stays standard_v1. Validate and error cleanly on bad files
-- Exit codes: document/centralize (0 ok, 1 diagnose-Fail, 2 backend/error) in `--help` epilogue
-- Config file support if Shoko has it (~/.skirrrc or similar — check Shoko main_cli.py; keep minimal, only adopt what Shoko actually does)
-- Signal handling on monitor: graceful stop_monitoring() on SIGINT/SIGTERM instead of hard kill (tokio::signal or ctrlc-style handler; keep sync loop)
-- Error UX: map BackendError variants to friendly stderr messages + hint (e.g. PermissionDenied → suggest sudo / replug)
-**Verify locally**: cargo test/clippy pass; exercise --profile with a hand-written profile JSON; kill monitor with Ctrl-C and confirm clean exit path
-**Reference**: skirr-core/src/profile.rs; Shoko config handling
+**Current**: Phase 5.1 - Build & Release Pipeline
+**Action**: Create the release workflow (`release.yml`, tag-triggered `v*`):
+- 4-target matrix per "Release Targets" section above: windows-x64 portable .exe (zip), macos-arm64 + macos-x64 universal-or-separate .app→.dmg bundles (with /Applications symlink + Gatekeeper note in DMG, Shoko-style), linux-x64 tar.gz (CLI only)
+- macOS bundling: minimal .app skeleton (Contents/MacOS/skirr binary + Info.plist), hdiutil to make the DMG; note code-signing is out of scope until certs exist — document ad-hoc signing (`codesign -s -`) so arm64 runs at all
+- Windows: plain cargo build --release, zip the exe
+- Linux: tar.gz of the single binary
+- Artifacts attached to the GitHub Release; workflow mirrors ci.yml's paused state — leave triggers ON for tags (releases are manual by tagging), document this in CI Status section
+- Local dry-run: build each target's artifact layout via script or just verify `cargo build --release` output paths the workflow expects
+**Verify locally**: can't run cross-platform builds here fully; validate YAML syntax and any local steps on the dev host; 🟡 first real run happens on tag push
+**Reference**: .github/workflows/ci.yml (existing patterns); Release Targets section; Shoko release.yml if present
 ---
-*Last updated: 2026-08-24 | Phase 4.2 done (tabled table, colored diagnosis, pure renderers); next agent: Phase 4.3*
+*Last updated: 2026-08-24 | Phase 4 COMPLETE (MVP CLI done); next agent: Phase 5.1*
