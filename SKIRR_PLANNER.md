@@ -499,22 +499,20 @@ CI must build all four artifacts on every release tag.
 
 **Total Project Progress: 66%** *(phase-weighted: Phases 0–4, 6–7, 9–11 complete; 5 & 8 nearly done; all implementation phases complete — remaining work is polish, verification sweeps, and release packaging)*
 
-### CI Status (owner decision, 2026-08-24)
+### CI Status (re-enabled 2026-08-25)
 
-**Automatic CI runs are PAUSED on `dev`** — `.github/workflows/ci.yml` triggers are
-commented out (`workflow_dispatch` only) until backends reach a more stable state.
-Rules while paused:
+**Automatic CI is ACTIVE on `dev` and `main`.** Triggered on every push and pull request.
 
-1. Agents MUST still verify locally before handoff: `cargo fmt --all --check`,
-   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-2. Known re-enable blocker: ubuntu runner needs `pkg-config` + `libudev-dev`
-   installed before `cargo clippy/test` (the `libudev` crate links system libudev).
-   Fix is already noted as a comment inside ci.yml.
-3. Release workflow (`release.yml`) is tag-triggered and unaffected.
-4. Re-enable CI when Phase 2 or 3 first lands a working backend, whichever comes
-   first. Real device/hardware testing itself stays deferred to Phase 5.3
-   (MVP Verification), which is intentionally far out; local unit tests are the
-   only quality gate until then.
+Pipeline per platform (ubuntu-22.04, macos-14, windows-latest):
+1. `cargo fmt --all -- --check`
+2. `cargo clippy --workspace --all-targets -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo run -p skirr-cli -- --help` (smoke test)
+
+Known notes:
+- Ubuntu runner installs `pkg-config` + `libudev-dev` before clippy/test (libudev linkage).
+- GUI crate (`skirr-gui/src-tauri`) not in CI — Tauri build requires Node.js; deferred until stable.
+- Release workflow (`release.yml`) remains tag-triggered and independent.
 
 ---
 
@@ -526,7 +524,7 @@ Rules while paused:
 4. **Handoff ready**: When task is `[x]`, next agent can pick up next `[ ]`
 5. **Never skip**: Tasks must be done in order within a phase (dependencies)
 6. **Cross-phase**: Phase N+1 cannot start until Phase N is 100%
-7. **CI paused**: While CI Status says PAUSED, run the three local verification commands manually on every handoff (see CI Status above); no push-watching expected
+7. **CI active**: Run the three verification commands locally on every handoff (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`). CI catches regressions on push; local verification prevents unnecessary CI failures.
 
 ---
 
