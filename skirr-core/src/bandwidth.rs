@@ -172,7 +172,7 @@ pub fn plan_display_bandwidth(topo: &SystemTopology) -> MultiDisplayPlan {
             exceeds_upstream_uplink: exceeds,
         });
     }
-    requirements.sort_by(|a, b| b.required_mbps.cmp(&a.required_mbps));
+    requirements.sort_by_key(|a| std::cmp::Reverse(a.required_mbps));
     MultiDisplayPlan {
         total_required_mbps: requirements.iter().map(|r| r.required_mbps).sum(),
         requirements,

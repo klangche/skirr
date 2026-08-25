@@ -28,6 +28,24 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Stamp version suffix
+        shell: bash
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          if [[ "$BRANCH" == "main" ]]; then
+            SUFFIX="beta"
+          elif [[ "$BRANCH" == "dev" ]]; then
+            SUFFIX="alpha"
+          else
+            SUFFIX="alpha"
+          fi
+          # Append CI run number for traceability: 0.1.0-alpha.42
+          VERSION_SUFFIX="${SUFFIX}.${GITHUB_RUN_NUMBER}"
+          for toml in skirr-*/Cargo.toml; do
+            sed -i.bak "s/^version = \"0\.1\.0\"/version = \"0.1.0-${VERSION_SUFFIX}\"/" "$toml"
+            rm -f "${toml}.bak"
+          done
+          echo "Stamped version suffix: ${VERSION_SUFFIX}"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

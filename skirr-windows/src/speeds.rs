@@ -270,8 +270,10 @@ mod win {
             })?;
 
             for index in 0..u32::MAX {
-                let mut dia = SP_DEVICE_INTERFACE_DATA::default();
-                dia.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
+                let mut dia = SP_DEVICE_INTERFACE_DATA {
+                    cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+                    ..Default::default()
+                };
                 if SetupDiEnumDeviceInterfaces(
                     hset,
                     None,

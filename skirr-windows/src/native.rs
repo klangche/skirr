@@ -126,6 +126,7 @@ pub fn decode_utf16(buf: &[u16]) -> Option<String> {
 
 /// Decode a NUL-terminated UTF-16 string from a little-endian byte buffer
 /// (as returned by `SetupDiGetDevicePropertyW` for `DEVPROP_TYPE_STRING`).
+#[allow(clippy::chunks_exact_to_as_chunks)]
 pub fn decode_utf16_bytes(buf: &[u8]) -> Option<String> {
     let units: Vec<u16> = buf
         .chunks_exact(2)
@@ -180,8 +181,10 @@ pub(crate) mod win {
             )?;
 
             for index in 0..u32::MAX {
-                let mut data = SP_DEVINFO_DATA::default();
-                data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+                let mut data = SP_DEVINFO_DATA {
+                    cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+                    ..Default::default()
+                };
                 if SetupDiEnumDeviceInfo(hset, index, &mut data).is_err() {
                     break; // ERROR_NO_MORE_ITEMS
                 }
@@ -302,8 +305,10 @@ pub(crate) mod win {
 
             let mut out = Vec::new();
             for index in 0..u32::MAX {
-                let mut data = SP_DEVINFO_DATA::default();
-                data.cbSize = std::mem::size_of::<SP_DEVINFO_DATA>() as u32;
+                let mut data = SP_DEVINFO_DATA {
+                    cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+                    ..Default::default()
+                };
                 if SetupDiEnumDeviceInfo(hset, index, &mut data).is_err() {
                     break;
                 }

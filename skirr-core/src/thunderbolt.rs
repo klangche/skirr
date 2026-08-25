@@ -70,10 +70,8 @@ pub fn parse_system_profiler_thunderbolt(json: &str) -> Result<Vec<ThunderboltRo
             let bare = key.strip_suffix("_key").unwrap_or(key);
             match val {
                 Value::String(s) => fields.push((bare.to_string(), s.clone())),
-                Value::Object(_) => {
-                    if bare.starts_with("receptacle_") {
-                        receptacles.push(parse_receptacle(bare, val));
-                    }
+                Value::Object(_) if bare.starts_with("receptacle_") => {
+                    receptacles.push(parse_receptacle(bare, val));
                 }
                 _ => {}
             }
