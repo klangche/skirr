@@ -6,12 +6,19 @@
 //! All IOKit usage lives behind `#[cfg(target_os = "macos")]`; the parsing and
 //! normalization layers compile everywhere so tests run on any host.
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod backend;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod displays;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod hotplug;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod native;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod speeds;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod topology;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub mod usb_c;
 
 /// Version marker for the macOS backend.

@@ -5,21 +5,27 @@
 //! semantics. Displays with no EDID still appear (vendor/product codes
 //! only) — honest partial data beats absence.
 
+#[cfg(target_os = "macos")]
 use crate::native::{self, DisplayRecord};
-use skirr_core::{edid, BackendResult, DisplayInfo, DisplayType, SystemTopology};
+#[cfg(target_os = "macos")]
+use skirr_core::{edid, DisplayInfo, DisplayType};
+use skirr_core::{BackendResult, SystemTopology};
 
 /// Collect connected displays and attach them to the topology.
+#[cfg(target_os = "macos")]
 pub(crate) fn attach(topo: &mut SystemTopology) -> BackendResult<()> {
     topo.displays = collect()?;
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn collect() -> BackendResult<Vec<DisplayInfo>> {
     let records = native::displays()?;
     Ok(records.iter().filter_map(record_to_display).collect())
 }
 
 /// Decode one record; `None` when even vendor/product are absent.
+#[cfg(target_os = "macos")]
 fn record_to_display(record: &DisplayRecord) -> Option<DisplayInfo> {
     if let Some(mut info) = edid::parse_edid(&record.edid_raw, record.service_name.clone()) {
         info.hdr_supported = edid::detect_hdr_support(&record.edid_raw);
@@ -67,9 +73,10 @@ fn record_to_display(record: &DisplayRecord) -> Option<DisplayInfo> {
     })
 }
 
-/// Non-macos build: no IOKit, nothing honest to report.
+/// Non-macOS build: no IOKit, nothing honest to report.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn attach(_topo: &mut SystemTopology) -> BackendResult<()> {
+    use skirr_core::BackendError;
     Err(BackendError::unsupported(
         crate::BACKEND_NAME,
         "display enumeration requires macOS",
@@ -77,6 +84,7 @@ pub(crate) fn attach(_topo: &mut SystemTopology) -> BackendResult<()> {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     use super::*;
 
