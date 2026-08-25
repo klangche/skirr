@@ -381,7 +381,7 @@ CI must build all four artifacts on every release tag.
 - [x] Speed bottleneck visualization *(table: device name, max vs current Mbps, Minor/Major/Critical badges; device names resolved via id→device map)*
 - [x] Event timeline *(reuses `EventCorrelator` so hub removals collapse exactly like live monitor output; severity color classes; "No events recorded." when empty)*
 - [x] PASS/WARNING/FAIL summary *(verdict badge in header, same colors as CLI semantics)*
-- [~] Zip bundle (report.html + all .json files) *(deferred: needs a zip dep for marginal gain — `report --html <path>` already emits both formats from one enumeration; bundle decision folds into GUI packaging)*
+- [~] Zip bundle (report.html + all .json files) *(deferred — all stable `zip` crate versions yanked on crates.io; only 9.0.0-pre3 available with breaking API; revisit when stable releases resume. `report --html <path>` already emits both formats from one enumeration)*
 - **Progress: 83%**
 - **Notes**: CLI surface: `skirr report --html <path>` (optional; JSON always written, HTML additionally). 4 core tests (chain rendering incl. free ports + bottleneck names, hostile-name escaping, empty-bus valid document, collapsed event timeline). Verified live on dev host (3622 B page). 157 tests workspace-wide; fmt/clippy clean host + both cross-targets.
 
@@ -494,7 +494,7 @@ CI must build all four artifacts on every release tag.
 | 5 | Distribution & Documentation | 90% | [~] In progress (5.1–5.2 done; 5.3 macOS ARM64 sweep done, Win/Ubuntu at tag time) |
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
-| 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
+| 8 | Live Monitoring & Reports | 93% | [~] In progress (8.1–8.2 done; 8.3 done, zip bundle deferred — no stable zip crate) |
 | 9 | Tauri GUI | 100% | [x] Complete (shell + all views + polish; TB/USB4 standalone panel deferred to Phase 10/11) |
 | 10 | Advanced Features (P2) | 100% | [x] Completed (10.1 live-verified TB/USB4 + bandwidth; 10.2 Type-C power (Linux-only data, macOS/Windows gaps documented); 10.3 display planning; 10.4 root-cause/periodicity/display correlation + `--timeline` export) |
 | 11 | Hardware Details (P3) | 100% | [x] Completed (11.1 PDO parser + PPS + contract history + cable wattage; 11.2 CableDetails struct + CC pin + speed hint; 11.3 DeviceErrorStats + debugfs LTSSM/link counters; 185 tests green) |
@@ -545,7 +545,7 @@ Known notes:
 - Hardware sweep of rule engine verdicts against real device mix
 
 **Track 2 — Phase 8 polish**:
-- HTML report zip bundle (embed JSON + HTML in single downloadable archive)
+- HTML report zip bundle — deferred (no stable zip crate on crates.io; revisit later)
 
 **Track 3 — CI (already re-enabled and green)**:
 - CI triggers active on push to main/dev + pull_request
@@ -554,5 +554,5 @@ Known notes:
 
 **Reference**: .github/workflows/ci.yml (active), release.yml (tag-triggered), SKIRR_PLANNER.md
 ---
-*Last updated: 2026-08-25 | Phase 5.3 macOS ARM64 sweep done: receptacle ID bug fixed (receptacle_id_key field), display honest absence confirmed, all CLI commands validated, JSON/HTML reports verified. CI re-enabled and green on all 3 platforms. Workspace 185 tests green. Remaining: Windows/Ubuntu hardware sweeps + Phase 8 zip bundle.*
+*Last updated: 2026-08-25 | Alpha tag v0.1.0-alpha.1 created (ready to push). Phase 5.3 macOS ARM64 sweep done. CI re-enabled and green on all 3 platforms. Zip bundle deferred (crate yanked). Workspace 185 tests green. Remaining: Windows/Ubuntu hardware sweeps.*
 ---
