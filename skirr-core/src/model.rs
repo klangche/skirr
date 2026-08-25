@@ -594,7 +594,7 @@ pub struct Usb4Capabilities {
 }
 
 /// Power delivery information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PowerInfo {
     pub source_capabilities: Vec<PowerDataObject>,
     pub sink_capabilities: Vec<PowerDataObject>,
@@ -607,7 +607,7 @@ pub struct PowerInfo {
     pub pps_max_current_ma: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PowerDataObject {
     pub pdo_type: PdoType,
     pub voltage_mv: u16,
@@ -624,7 +624,7 @@ pub enum PdoType {
     AugmentedPower,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PdoFlags {
     pub dual_role_power: bool,
     pub usb_suspend: bool,

@@ -5,6 +5,7 @@ pub mod bandwidth;
 pub mod correlate;
 pub mod docks;
 pub mod edid;
+pub mod error_counters;
 pub mod model;
 pub mod profile;
 pub mod report;

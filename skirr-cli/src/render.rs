@@ -273,7 +273,8 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     }
 
     // ------------------------------------------------------------------
-    // USB-C POWER (Phase 10.2): PD role/orientation/E-marker per connector.
+    // USB-C POWER (Phase 10.2 + 11.1–11.2): PD role/orientation/E-marker,
+    // PDO source caps, PPS, cable wattage per connector.
     // ------------------------------------------------------------------
     if !topo.type_c_ports.is_empty() {
         let _ = writeln!(out, "{}", "USB-C POWER".bold());
@@ -288,14 +289,8 @@ pub fn render_tree(topo: &SystemTopology) -> String {
             if let Some(pt) = &port.port_type {
                 let _ = write!(line, " · type {pt}");
             }
-            match port.orientation {
-                skirr_core::ConnectorOrientation::Normal => {
-                    let _ = write!(line, " · orientation normal");
-                }
-                skirr_core::ConnectorOrientation::Flipped => {
-                    let _ = write!(line, " · orientation flipped");
-                }
-                _ => {}
+            if let Some(cc) = port.cc_pin_active() {
+                let _ = write!(line, " · {cc}");
             }
             let _ = writeln!(
                 out,
@@ -308,18 +303,62 @@ pub fn render_tree(topo: &SystemTopology) -> String {
                     "no partner".normal()
                 }
             );
-            if let Some(emarker) = &port.emarker {
-                let mut cable = String::from("  Cable E-marker:");
-                if let Some(rating) = emarker.current_rating_a {
-                    let _ = write!(cable, " {rating}A");
+            // Source capabilities list.
+            if !port.source_caps.is_empty() {
+                let _ = write!(out, "  Source caps:");
+                for pdo in &port.source_caps {
+                    let (label, c) = match pdo.pdo_type {
+                        skirr_core::PdoType::FixedSupply => ("fixed", Some(pdo.current_ma)),
+                        skirr_core::PdoType::VariableSupply => ("var", Some(pdo.current_ma)),
+                        skirr_core::PdoType::BatterySupply => ("bat", None),
+                        skirr_core::PdoType::AugmentedPower => ("pps", Some(pdo.current_ma)),
+                    };
+                    let _ = write!(out, " [{label}] {}V", pdo.voltage_mv as f64 / 1000.0);
+                    if let Some(ma) = c {
+                        let _ = write!(out, " {}A", ma as f64 / 1000.0);
+                    }
                 }
-                if let Some(mode) = &emarker.plug_mode {
-                    let _ = write!(cable, " mode {mode}");
+                let _ = writeln!(out);
+                if port.supports_pps() {
+                    let _ = writeln!(out, "  {}", "PPS supported".cyan());
                 }
-                if let (Some(v), Some(p)) = (emarker.vendor_id, emarker.product_id) {
-                    let _ = write!(cable, " ({v:04X}:{p:04X})");
+            }
+            // Active contract summary.
+            if let Some(pinfo) = &port.power_info {
+                if let Some(v) = pinfo.contract_voltage_mv {
+                    let _ = write!(out, "  Contract: {v}mV");
+                    if let Some(c) = pinfo.contract_current_ma {
+                        let _ = write!(out, " × {c}mA");
+                    }
+                    if let Some(p) = pinfo.contract_power_mw {
+                        let _ = write!(out, " ({:.1}W)", p as f64 / 1000.0);
+                    }
+                    let _ = writeln!(out);
                 }
-                let _ = writeln!(out, "{cable}");
+            }
+            // Cable details.
+            if let Some(cd) = port.cable_details() {
+                let mut parts = Vec::new();
+                parts.push("Cable:".into());
+                if let (Some(v), Some(p)) = (cd.vendor_id, cd.product_id) {
+                    parts.push(format!("VID:PID {v:04X}:{p:04X}"));
+                }
+                if let Some(a) = cd.current_rating_a {
+                    parts.push(format!("{a}A"));
+                }
+                if let Some(w) = cd.wattage_limit_w {
+                    parts.push(format!("≤{w}W"));
+                }
+                if let Some(mode) = &cd.plug_mode {
+                    parts.push(mode.clone());
+                }
+                if let Some(ty) = &cd.product_type {
+                    parts.push(ty.clone());
+                }
+                if let Some(sp) = &cd.speed_rating {
+                    parts.push(sp.clone());
+                }
+                let _ = writeln!(out, "  {}", parts.join(" · "));
             }
         }
         let _ = writeln!(out);

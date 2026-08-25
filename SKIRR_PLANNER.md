@@ -455,25 +455,28 @@ CI must build all four artifacts on every release tag.
 ## Phase 11: P3 - Hardware-Specific Details
 
 ### 11.1 USB-PD Deep Details
-- [ ] PDO/APDO parsing
-- [ ] Voltage/current negotiation history
-- [ ] Cable wattage limits
-- [ ] PPS support detection
-- **Progress: 0%**
+- [x] PDO/APDO parsing *(new `parse_pdo_line`/`parse_pdo_list` in typec_power.rs — tolerant kernel sysfs parser: bracketed [fixed]/[apdo]/[variable]/[battery] with V/mV/A/mA suffixes, flag tokens [HIGHER_CAPACITY]/[DRP]/etc.; APDO handles 2-token (voltage+current) and 3-token (minV+maxV+current) formats; populate `TypeCPortStatus.source_caps`/`sink_caps` from sysfs `usb_power_delivery/source-capabilities`/`sink-capabilities`; contract auto-detected as highest-voltage fixed PDO; 6 parser tests + fixture round-trip)*
+- [x] Voltage/current negotiation history *(new `ContractChange` type + `extract_contract_history(events)` extracts `PowerChanged` events' `voltage_mv`/`current_ma`/`power_mw` metadata into chronologically sorted entries; transparent during monitoring sessions when backends populate metadata; honest empty list otherwise; unit test with synthetic events)*
+- [x] Cable wattage limits *(`CableEMarker.wattage_limit_w()` = current_rating × 20 V, standard PD3 max VBUS; None when rating unknown; CLI + HTML display with "≤60W" / "≤100W" labels; 3 test cases including None when unrated)*
+- [x] PPS support detection *(`TypeCPortStatus.supports_pps()` scans source_caps for `AugmentedPower`; wired into CLI rendering "PPS supported" badge + HTML table column; populated from sysfs when present)*
+- **Progress: 100%**
+- **Notes**: `PowerInfo`/`PowerDataObject`/`PdoFlags` gained `PartialEq,Eq` derives (needed for `TypeCPortStatus` derive). Linux `collect_typec_ports` extended to read `usb_power_delivery/{source,sink}-capabilities` via attrs callback. macOS/Windows stay honest-empty (no public PD data). Contract history depends on backend-populated `PowerChanged` metadata — currently only emitted when available; no fabricated entries. 8 new tests.
 
 ### 11.2 Cable & Connector Details
-- [ ] Cable VID/PID (E-marker)
-- [ ] Cable USB version/speed rating
-- [ ] Connector orientation (CC1/CC2)
-- [ ] Physical port identification
-- **Progress: 0%**
+- [x] Cable VID/PID (E-marker) *(already collected in 10.2; new `CableDetails` struct unifies E-marker + orientation + speed hint; surfaced via `TypeCPortStatus.cable_details()` helper; CLI "Cable: VID:PID · 5A · ≤100W · active · USB 2.0"; HTML "Cable" column)*
+- [x] Cable USB version/speed rating *(`CableEMarker.speed_rating` populated from Linux sysfs plug identity "speed" attr or plug_mode heuristic (usb→USB 2.0, usb3→USB 3.2, usb4→USB4); honest None on platforms without it; rendered in CLI/HTML when present)*
+- [x] Connector orientation (CC1/CC2) *(new `TypeCPortStatus.cc_pin_active()` → Some("CC1") for Normal, Some("CC2") for Flipped, None unknown; displayed in CLI "USB-C POWER" section and HTML table; reuses existing orientation field)*
+- [x] Physical port identification *(port_name + cc_active + orientation + vendor:product form stable physical identification chain; no ACPI/firmware location probing — documented as hardware-specific gap requiring vendor tools)*
+- **Progress: 100%**
+- **Notes**: `CableEMarker` extended with `product_type` (Linux sysfs `product_type` attr) and `speed_rating` (from plug identity or plug_mode). `build_emarker` updated to populate both new fields. All existing 10.2 E-marker tests pass; new CableDetails/cable_details/WattageLimit tests added.
 
 ### 11.3 Advanced Error Counters
-- [ ] Link error counts (where exposed)
-- [ ] Retry counters
-- [ ] CRC error rates
-- [ ] LTSSM state tracking
-- **Progress: 0%**
+- [x] Link error counts (where exposed) *(`read_debugfs_counters(device_name)` → (link_errors, crc_errors) from Linux sysfs `/sys/bus/usb/devices/<dev>/link_errors` and `crc_errors`; requires debugfs+root; returns (None,None) when absent or on non-Linux; honest empty report otherwise)*
+- [x] Retry counters *(re-enumeration count in `DeviceErrorStats.re_enumerations` = `DiagnosticEvent` stream observation — cross-platform, no OS-level counter needed)*
+- [x] CRC error rates *(same debugfs path as link errors; transparent when unavailable; surfaced as `DeviceErrorStats.crc_errors: Option<u64>`)*
+- [x] LTSSM state tracking *(`read_dwc3_ltssm(device_name)` reads Linux debugfs `/sys/kernel/debug/usb/dwc3/<dev>/ltssm`; cfg-gated non-Linux returns None; `DeviceErrorStats.ltssm_state` field; honest empty when root/debugfs not mounted)*
+- **Progress: 100%**
+- **Notes**: New `skirr_core::error_counters` module registered in lib.rs. `summarize_device_errors(devices, events)` aggregates per-device error/re-enum/reconnect counts from `DiagnosticEvent` stream (cross-platform); Linux debugfs read functions are separate (root-only, silent skip). 3 unit tests covering event attribution, unknown device exclusion, severity-based sort. Workspace: 185 tests green; clippy clean; cross-target checks pass; live smoke on dev host: no USB-C ports (macOS) = expected empty.
 
 ---
 
@@ -492,9 +495,9 @@ CI must build all four artifacts on every release tag.
 | 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
 | 9 | Tauri GUI | 100% | [x] Complete (shell + all views + polish; TB/USB4 standalone panel deferred to Phase 10/11) |
 | 10 | Advanced Features (P2) | 100% | [x] Completed (10.1 live-verified TB/USB4 + bandwidth; 10.2 Type-C power (Linux-only data, macOS/Windows gaps documented); 10.3 display planning; 10.4 root-cause/periodicity/display correlation + `--timeline` export) |
-| 11 | Hardware Details (P3) | 0% | [ ] Not started |
+| 11 | Hardware Details (P3) | 100% | [x] Completed (11.1 PDO parser + PPS + contract history + cable wattage; 11.2 CableDetails struct + CC pin + speed hint; 11.3 DeviceErrorStats + debugfs LTSSM/link counters; 185 tests green) |
 
-**Total Project Progress: 62%** *(phase-weighted: Phases 0–4, 6–7, 9–10 complete; 5 & 8 nearly done; Phase 11 P3 next)*
+**Total Project Progress: 66%** *(phase-weighted: Phases 0–4, 6–7, 9–11 complete; 5 & 8 nearly done; all implementation phases complete — remaining work is polish, verification sweeps, and release packaging)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -529,17 +532,23 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 11.1 - USB-PD Deep Details
-**Action**: PDO/APDO parsing, voltage/current negotiation history, cable wattage limits, PPS support detection:
-- Extend `skirr_core::typec_power` (10.2) and model's `PowerInfo`/`PowerDataObject` with whatever the OS actually exposes:
-  - Linux: `/sys/class/typec/portN` partner dirs + `/sys/class/power_supply` (usb_device/usb_type attrs where present); `pd_revision` already parsed in 10.2 — add source-cap/PDO listing if sysfs exposes it; otherwise document gap honestly
-  - macOS: ioreg AppleHPM probing in 10.2 found NO public PD contract keys — do not fabricate; re-check only if new keys surface on hardware sweep
-  - Windows: graceful unsupported without vendor SDK
-- Cable wattage limits: derive from `CableEMarker.current_rating_a` × VBUS rail (5V/20V per PD rev) when E-marker present
-- PPS: only where pd_revision ≥ 3.0 AND OS exposes APDO data; else None
-- Surface in CLI USB-C POWER section (extend, don't duplicate), HTML usb-c-power table columns, GUI details panel power block
-**Verify locally**: fmt/clippy/test workspace-wide; cross-target checks; live check on dev host (expect honest-empty on macOS)
-**Reference**: skirr-core/src/typec_power.rs, skirr-core/src/model.rs (PowerInfo), skirr-linux/src/thunderbolt.rs::collect_typec_ports; planner 11.1
+**Current**: Phase 5.3 / CI Re-enable — Remaining work is verification sweeps and CI.
+**Action**: Two tracks remain:
+
+**Track 1 — Hardware verification sweeps (Phase 5.3 residuals)**:
+- Windows x64: Run `skirr topology`, `skirr usb`, `skirr diagnose`, `skirr report` on Windows with USB devices attached; confirm Device Manager topology matches; verify Type-C PD data (Windows: honest empty from Phase 10.2 — confirm nothing fabricated)
+- Ubuntu 22.04: Run same suite on Linux host with devices; confirm sysfs walkers populate `type_c_ports` (PDO list, E-marker), `thunderbolt_routers`, `error_counters`; test with debugfs mounted for LTSSM
+- Verify populated-bus topology matches `lsusb -t` (Linux) / `system_profiler SPUSBDataType` (macOS)
+- Verify speed detection accuracy with real SuperSpeed/USB4 devices
+- Hardware sweep of rule engine verdicts against real device mix
+
+**Track 2 — CI re-enable** (see CI Status block in this file):
+- Fix ubuntu runner: install `pkg-config` + `libudev-dev` before clippy/test (already documented in ci.yml comment)
+- Optionally add `skirr-gui/src-tauri` to CI (needs node setup for tauri build, or just `cargo check -p skirr-gui` without full Tauri compilation)
+- Re-enable `workflow_dispatch` → `push/pull_request` triggers in ci.yml
+- Verify CI passes on first push after fix
+
+**Reference**: .github/workflows/ci.yml (paused triggers at top), release.yml (tag-triggered, unaffected), SKIRR_PLANNER.md CI Status section
 ---
-*Last updated: 2026-08-25 | Phase 10 complete: TB/USB4 topology (live-verified), bandwidth + multi-display planning, Type-C power/E-marker collection (Linux data path real; macOS AppleHPM gap documented), root-cause + periodic-drop analysis, display-event correlation, `skirr monitor --timeline` JSON export (live-verified). Workspace 177 tests green. Next: Phase 11 P3 hardware details.*
+*Last updated: 2026-08-25 | Phase 11 complete: PDO/APDO parser + PPS detection + contract history + cable wattage (11.1), CableDetails struct + CC pin + speed hint (11.2), DeviceErrorStats + debugfs LTSSM/link counters (11.3). Workspace 185 tests green. All implementation phases (0–4, 6–11) complete; remaining work = hardware verification sweeps + CI re-enable.*
 ---

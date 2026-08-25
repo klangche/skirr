@@ -64,7 +64,15 @@ pub fn collect_typec_ports() -> Vec<skirr_core::TypeCPortStatus> {
     for dir in dirs {
         // Attribute lookup falls through port → partner → plug → plug identity.
         let partner_exists = dir.join("partner").exists();
+        let pd_dir = dir.join("usb_power_delivery");
         let attrs = |attr: &str| -> Option<String> {
+            // PDO capability files live under usb_power_delivery/.
+            if attr == "source-capabilities" {
+                return read_attr(&pd_dir, "source-capabilities");
+            }
+            if attr == "sink-capabilities" {
+                return read_attr(&pd_dir, "sink-capabilities");
+            }
             read_attr(&dir, attr)
                 .or_else(|| read_attr(&dir.join("partner"), attr))
                 .or_else(|| read_attr(&dir.join("plug"), attr))

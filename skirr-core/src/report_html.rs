@@ -166,9 +166,9 @@ pub fn render_html(report: &SkirrReport) -> String {
         out.push_str("</ul></section>\n");
     }
 
-    // USB-C power status (Phase 10.2).
+    // USB-C power status + PDOs + cable (Phase 10.2 + 11.1–11.2).
     if !topo.type_c_ports.is_empty() {
-        out.push_str("<section id=\"usb-c-power\"><h2>USB-C power</h2><table><tr><th>Port</th><th>Power role</th><th>PD</th><th>Orientation</th><th>Status</th><th>Cable</th></tr>");
+        out.push_str("<section id=\"usb-c-power\"><h2>USB-C power</h2><table><tr><th>Port</th><th>Power role</th><th>PD</th><th>CC</th><th>Orientation</th><th>Status</th><th>Source caps</th><th>PPS</th><th>Cable</th></tr>");
         for port in &topo.type_c_ports {
             let role = port
                 .power_role
@@ -179,6 +179,7 @@ pub fn render_html(report: &SkirrReport) -> String {
                 .as_deref()
                 .map(|r| format!("PD {r}"))
                 .unwrap_or_else(|| "—".into());
+            let cc = port.cc_pin_active().unwrap_or("?");
             let orient = match port.orientation {
                 crate::ConnectorOrientation::Normal => "normal",
                 crate::ConnectorOrientation::Flipped => "flipped",
@@ -191,23 +192,54 @@ pub fn render_html(report: &SkirrReport) -> String {
             } else {
                 "no partner"
             };
-            let cable = port
-                .emarker
-                .as_ref()
-                .map(|e| {
-                    let mut s = String::from("E-marker");
-                    if let Some(rating) = e.current_rating_a {
-                        let _ = write!(s, " {rating}A");
+            // Source caps display.
+            let caps_html = if port.source_caps.is_empty() {
+                "—".to_string()
+            } else {
+                let mut cells = Vec::new();
+                for pdo in &port.source_caps {
+                    let (label, ma_opt) = match pdo.pdo_type {
+                        crate::PdoType::FixedSupply => ("fixed", Some(pdo.current_ma)),
+                        crate::PdoType::VariableSupply => ("var", Some(pdo.current_ma)),
+                        crate::PdoType::BatterySupply => ("bat", None),
+                        crate::PdoType::AugmentedPower => ("pps", Some(pdo.current_ma)),
+                    };
+                    let mut cell = format!("{}V", pdo.voltage_mv as f64 / 1000.0);
+                    if let Some(ma) = ma_opt {
+                        let _ = write!(cell, " {}A", ma as f64 / 1000.0);
                     }
-                    s
+                    cells.push(format!("[{label}] {cell}"));
+                }
+                html_escape(&cells.join(" "))
+            };
+            let pps = if port.supports_pps() { "yes" } else { "—" };
+            let cable = port
+                .cable_details()
+                .map(|cd| {
+                    let mut parts = Vec::new();
+                    if let Some(a) = cd.current_rating_a {
+                        parts.push(format!("{a}A"));
+                    }
+                    if let Some(w) = cd.wattage_limit_w {
+                        parts.push(format!("≤{w}W"));
+                    }
+                    if let Some(ty) = &cd.product_type {
+                        parts.push(ty.clone());
+                    }
+                    if parts.is_empty() {
+                        "present".into()
+                    } else {
+                        parts.join(" ")
+                    }
                 })
                 .unwrap_or_else(|| "—".into());
             let _ = write!(
                 out,
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{orient}</td><td>{status}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{cc}</td><td>{orient}</td><td>{status}</td><td>{caps_html}</td><td>{}</td><td>{}</td></tr>",
                 html_escape(&port.port_name),
                 html_escape(&role),
                 html_escape(&pd),
+                html_escape(pps),
                 html_escape(&cable),
             );
         }
