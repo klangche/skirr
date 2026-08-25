@@ -1,7 +1,5 @@
-name: Release
+name: "Release ${{ github.run_number }}"
 
-# Tag-triggered release builds. Runs even while CI's automatic triggers are
-# paused: cutting a release is always a deliberate manual act.
 on:
   push:
     branches:
@@ -194,6 +192,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+
+      - name: Create tag
+        run: |
+          VERSION="0.1.0-alpha.${GITHUB_RUN_NUMBER}"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -201,5 +207,6 @@ jobs:
       - name: Attach artifacts to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "v0.1.0-alpha.${{ github.run_number }}"
           files: dist/*
           generate_release_notes: true
