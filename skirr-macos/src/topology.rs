@@ -13,7 +13,10 @@
 use crate::backend::build_usb_device;
 use crate::native::RawDeviceInfo;
 use chrono::{DateTime, Utc};
-use skirr_core::{HostController, PlatformInfo, RootHub, SystemTopology, UsbDevice, UsbSpeed};
+use skirr_core::{
+    HostController, HubInfo, HubPowerSource, HubTTType, PlatformInfo, RootHub, SystemTopology,
+    UsbDevice, UsbSpeed,
+};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -74,6 +77,27 @@ pub(crate) fn build(
     for dev in &mut devices {
         if let Some(kids) = children.get(&dev.id) {
             dev.children_ids = kids.clone();
+        }
+    }
+
+    // Populate hub_info for devices that are hubs and have a port count from IOKit.
+    for dev in &mut devices {
+        if dev.is_hub {
+            let raw = raw_devices
+                .iter()
+                .find(|r| r.instance_id == dev.platform_id);
+            if let Some(port_count) = raw.and_then(|r| r.hub_port_count).filter(|&n| n > 0) {
+                dev.hub_info = Some(HubInfo {
+                    port_count,
+                    is_powered: false,
+                    power_source: HubPowerSource::Unknown,
+                    supports_mtt: false,
+                    tt_count: 0,
+                    tt_type: HubTTType::Unknown,
+                    hub_speed: dev.max_supported_speed,
+                    ports: Vec::new(),
+                });
+            }
         }
     }
 

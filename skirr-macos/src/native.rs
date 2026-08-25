@@ -37,6 +37,8 @@ pub struct RawDeviceInfo {
     /// system_profiler `"speed"` string parsed to Mb/s — ADVERTISED max,
     /// never negotiated (DATA_MAP §4).
     pub advertised_mbps: Option<u32>,
+    /// IOKit `port-count` for hub devices (device class 9); `None` for non-hubs.
+    pub hub_port_count: Option<u8>,
 }
 
 /// Stable per-plug identity: VID/PID plus location ID.
@@ -131,8 +133,9 @@ pub(crate) fn parse_system_profiler_json(json: &str) -> Result<Vec<RawDeviceInfo
 fn walk_sp_nodes(nodes: &[SpNode], parent: Option<&str>, out: &mut Vec<RawDeviceInfo>) {
     for node in nodes {
         let Some((vid, pid)) = node.ids() else {
-            // No IDs → not addressable as a device; still descend for children.
-            walk_sp_nodes(&node.items, None, out);
+            // No IDs → not addressable as a device; still descend for children
+            // but preserve the current parent so compound-device children stay linked.
+            walk_sp_nodes(&node.items, parent, out);
             continue;
         };
         let location = node
@@ -160,6 +163,7 @@ fn walk_sp_nodes(nodes: &[SpNode], parent: Option<&str>, out: &mut Vec<RawDevice
                 .speed
                 .as_deref()
                 .and_then(crate::speeds::parse_advertised_mbps),
+            hub_port_count: None,
         });
         walk_sp_nodes(&node.items, Some(instance.as_str()), out);
     }
@@ -408,6 +412,9 @@ mod iokit {
                         .number::<i64>("Speed")
                         .and_then(|v| u32::try_from(v).ok()),
                     advertised_mbps: None,
+                    hub_port_count: dict
+                        .number::<i64>("port-count")
+                        .and_then(|v| u8::try_from(v).ok()),
                 })
             }
             _ => None,

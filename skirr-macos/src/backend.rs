@@ -255,6 +255,7 @@ mod tests {
             parent: Some(make_instance(0x2109, 0x0817, 0x14200000)),
             speed_code: Some(3),
             advertised_mbps: Some(480),
+            hub_port_count: None,
         }
     }
 
