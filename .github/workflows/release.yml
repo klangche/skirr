@@ -27,9 +27,6 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: skirr-windows-x64
-          # Universal binary: both slices built on the Apple Silicon runner
-          # via cross-compilation — the macos-13 Intel runner pool queues for
-          # days, and lipo needs no Intel hardware at all.
           - os: macos-14
             target: aarch64-apple-darwin
             artifact: skirr-macos-arm64
@@ -37,12 +34,21 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: skirr-linux-amd64
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: skirr-gui/src-tauri
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.targets || matrix.target }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: skirr-gui/src-tauri
+
+      - name: Install Tauri CLI
+        shell: bash
+        run: cargo install tauri-cli --version "^2"
 
       - name: Resolve version
         id: version
@@ -52,67 +58,58 @@ jobs:
           BASE="0.1.0"
           RUN="${GITHUB_RUN_NUMBER}"
           if [ "${{ github.ref_name }}" = "main" ]; then
-            echo "version=${BASE}-beta.${RUN}" >> "$GITHUB_OUTPUT"
+            VERSION="${BASE}-beta.${RUN}"
           else
-            echo "version=${BASE}-alpha.${RUN}" >> "$GITHUB_OUTPUT"
+            VERSION="${BASE}-alpha.${RUN}"
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Stamp version in Cargo.toml
+      - name: Stamp version
         if: steps.version.outputs.version != '0.1.0'
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
+          cd ../..
           for toml in skirr-*/Cargo.toml; do
             sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" "$toml"
             rm -f "$toml.bak"
           done
+          sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" skirr-gui/src-tauri/tauri.conf.json
+          rm -f skirr-gui/src-tauri/tauri.conf.json.bak
 
-      - name: Build (release)
+      - name: Build (macOS)
+        if: runner.os == 'MacOS'
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p skirr-cli --target ${{ matrix.target }}
+          cargo tauri build --target ${{ matrix.target }} --bundles app
 
-      - name: Package (Windows portable .zip)
+      - name: Build (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/skirr.exe dist/
-          Compress-Archive -Path dist/skirr.exe -DestinationPath ${{ matrix.artifact }}.zip
-          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Out-File ${{ matrix.artifact }}.zip.sha256
+          set -euo pipefail
+          cargo tauri build --target ${{ matrix.target }} --bundles nsis
 
-      - name: Smoke test (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./target/${{ matrix.target }}/release/skirr.exe --help
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          cargo tauri build --target ${{ matrix.target }} --bundles deb
 
-      - name: Package (macOS .app -> .dmg)
+      - name: Package macOS DMG
         if: runner.os == 'MacOS'
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
-          APP="Skirr.app"
-          mkdir -p "dist/$APP/Contents/MacOS" "dist/dmg-staging"
-          cp "target/${{ matrix.target }}/release/skirr" "dist/$APP/Contents/MacOS/skirr"
-          cat > "dist/$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleName</key><string>Skirr</string>
-            <key>CFBundleIdentifier</key><string>io.github.klangche.skirr</string>
-            <key>CFBundleExecutable</key><string>skirr</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          PLIST
-          codesign --force --deep -s - "dist/$APP"
-          "./dist/$APP/Contents/MacOS/skirr" --help > /dev/null
-          cp -R "dist/$APP" dist/dmg-staging/
+          APP="target/release/bundle/macos/Skirr.app"
+          mkdir -p dist/dmg-staging
+          cp -R "$APP" dist/dmg-staging/
           ln -s /Applications dist/dmg-staging/Applications
           cat > dist/dmg-staging/HOW\ TO\ RUN.txt <<NOTE
           Skirr v${VERSION} (macOS, Apple Silicon)
@@ -140,52 +137,27 @@ jobs:
           ----------
           Drag Skirr.app into the Applications folder first (the shortcut
           above points there).
-
-          ADVANCED: CLI
-          -------------
-          /Applications/Skirr.app/Contents/MacOS/skirr --help
           NOTE
           hdiutil create -volname "Skirr ${VERSION}" -srcfolder dist/dmg-staging \
-            -format UDZO -ov "${{ matrix.artifact }}.dmg"
-          shasum -a 256 "${{ matrix.artifact }}.dmg" > "${{ matrix.artifact }}.dmg.sha256"
+            -format UDZO -ov "skirr-macos-arm64.dmg"
+          shasum -a 256 "skirr-macos-arm64.dmg" > "skirr-macos-arm64.dmg.sha256"
 
-      - name: Package (Linux .deb)
-        if: runner.os == 'Linux'
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          STAGING="dist/skirr_${VERSION}_amd64"
-          mkdir -p "$STAGING/DEBIAN" "$STAGING/usr/bin"
-          install -m 755 "target/${{ matrix.target }}/release/skirr" "$STAGING/usr/bin/skirr"
-          cat > "$STAGING/DEBIAN/control" <<CONTROL
-          Package: skirr
-          Version: ${VERSION}
-          Section: utils
-          Priority: optional
-          Architecture: amd64
-          Maintainer: klangche <skirr@klangche.io>
-          Description: Cross-platform USB analysis and diagnostic tool
-           Enumerates USB devices, reconstructs bus topology, detects speed
-           mismatches, monitors hotplug events, and diagnoses stability
-           issues using rule-based analysis.
-          CONTROL
-          # Smoke test before packing.
-          "$STAGING/usr/bin/skirr" --help > /dev/null
-          dpkg-deb --build "$STAGING"
-          mv "$STAGING.deb" "${{ matrix.artifact }}.deb"
-          sha256sum "${{ matrix.artifact }}.deb" > "${{ matrix.artifact }}.deb.sha256"
+          $exe = Get-ChildItem -Path target/release/bundle/nsis -Filter "*.exe" | Select-Object -First 1
+          Write-Host "Found installer: $($exe.FullName)"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
-            *.zip
-            *.zip.sha256
-            *.dmg
-            *.dmg.sha256
-            *.deb
-            *.deb.sha256
+            dist/*.dmg
+            dist/*.dmg.sha256
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/deb/*.deb
           if-no-files-found: error
 
   release:

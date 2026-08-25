@@ -554,5 +554,5 @@ Known notes:
 
 **Reference**: .github/workflows/ci.yml (active), release.yml (tag-triggered), SKIRR_PLANNER.md
 ---
-*Last updated: 2026-08-25 | Alpha tag v0.1.0-alpha.1 created. Push tag with `git push origin v0.1.0-alpha.1` (or via Git Desktop: Push → Include tags) to trigger release build on all 3 platforms.*
+*Last updated: 2026-08-25 | Release workflow now builds Tauri GUI for all platforms (macOS .app→.dmg, Windows .exe NSIS, Linux .deb). Auto-tag on release. CI - Build & test / Release - Build & package. Workspace 185 tests green. Remaining: Windows/Ubuntu hardware sweeps.*
 ---
