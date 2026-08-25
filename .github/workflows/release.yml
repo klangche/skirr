@@ -1,4 +1,4 @@
-name: "Release ${{ github.run_number }}"
+name: Release
 
 on:
   push:
