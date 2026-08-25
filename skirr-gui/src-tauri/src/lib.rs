@@ -11,9 +11,101 @@ use skirr_core::{
     BackendResult, DiagnosticEvent, DiagnosticResult, EventSummary, EventType, RuleEngine,
     SystemTopology, UsbBackend, UsbDevice,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cmp::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+
+// ---------------------------------------------------------------------------
+// Version comparison for update checking.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Tier {
+    Alpha = 0,
+    Beta = 1,
+    Stable = 2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Version {
+    major: u32,
+    minor: u32,
+    patch: u32,
+    tier: Tier,
+    revision: u32,
+}
+
+impl Version {
+    fn parse(s: &str) -> Option<Self> {
+        let s = s.trim_start_matches('v');
+        let (semver_str, pre_str) = match s.find('-') {
+            Some(pos) => (&s[..pos], Some(&s[pos + 1..])),
+            None => (s, None),
+        };
+        let parts: Vec<u32> = semver_str
+            .split('.')
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let (tier, revision) = match pre_str {
+            Some(p) if p.starts_with("alpha.") => {
+                let rev = p.strip_prefix("alpha.")?.parse().ok()?;
+                (Tier::Alpha, rev)
+            }
+            Some(p) if p.starts_with("beta.") => {
+                let rev = p.strip_prefix("beta.")?.parse().ok()?;
+                (Tier::Beta, rev)
+            }
+            Some(_) => return None,
+            None => (Tier::Stable, 0),
+        };
+        Some(Version {
+            major: parts[0],
+            minor: parts[1],
+            patch: parts[2],
+            tier,
+            revision,
+        })
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.major
+            .cmp(&other.major)
+            .then(self.minor.cmp(&other.minor))
+            .then(self.patch.cmp(&other.patch))
+            .then(self.tier.cmp(&other.tier))
+            .then(self.revision.cmp(&other.revision))
+    }
+}
+
+/// Decide whether `candidate` is a valid update from `current`.
+///
+/// Default mode: candidate must be strictly newer AND tier must move forward
+/// (candidate.tier >= current.tier).
+///
+/// Always-latest mode: candidate must be strictly newer, any tier allowed.
+///
+/// Universal rule: never downgrade.
+fn should_update(current: &Version, candidate: &Version, always_latest: bool) -> bool {
+    if candidate <= current {
+        return false;
+    }
+    if always_latest {
+        return true;
+    }
+    candidate.tier >= current.tier
+}
 
 /// Build the platform backend, mirroring the CLI dispatch.
 fn build_backend() -> BackendResult<Box<dyn UsbBackend>> {
@@ -189,6 +281,396 @@ fn build_chains(topo: &SystemTopology) -> TopologyChains {
         devices: topo.devices.len(),
         internal,
         external,
+        tb_routers: topo.thunderbolt_routers.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Topology view — flat-tree structure for the ASCII connector renderer.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+struct TopologyView {
+    root: TreeNode,
+    warnings: Vec<WarningLine>,
+    platform: Option<PlatformLimits>,
+    tb_routers: Vec<skirr_core::ThunderboltRouter>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TreeNode {
+    label: String,
+    /// "(Hops 2, Hubs 1, Tiers 3)" — only on port nodes.
+    meta: Option<String>,
+    vid: Option<u16>,
+    pid: Option<u16>,
+    speed_mbps: Option<u64>,
+    bold: bool,
+    hub_ports: Option<u8>,
+    dock_family: Option<String>,
+    display: Option<DisplayNode>,
+    children: Vec<TreeNode>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DisplayNode {
+    name: String,
+    resolution: Option<String>,
+    refresh_hz: Option<u16>,
+    hdr: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WarningLine {
+    severity: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PlatformLimits {
+    name: String,
+    max_hops: u8,
+    max_tiers: u8,
+    max_hubs: u8,
+}
+
+/// Compute per-device external-hub count by walking the parent chain.
+/// Returns (hops, external_hubs, tiers) for one device.
+fn chain_metrics_for(
+    device_id: uuid::Uuid,
+    by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
+) -> (u8, u8, u8) {
+    let mut hops: u8 = 0;
+    let mut external_hubs: u8 = 0;
+    let mut cursor = by_id.get(&device_id).and_then(|d| d.parent_id);
+    while let Some(cid) = cursor {
+        if let Some(parent) = by_id.get(&cid) {
+            if parent.is_hub || parent.device_class == skirr_core::UsbClass::Hub {
+                hops += 1;
+                if !parent.is_internal {
+                    external_hubs += 1;
+                }
+            }
+            cursor = parent.parent_id;
+        } else {
+            break;
+        }
+    }
+    (hops, external_hubs, hops.saturating_add(1))
+}
+
+/// Build a `TreeNode` subtree for one device and its descendants.
+fn build_tree_node(
+    dev: &UsbDevice,
+    by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
+    by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
+    displays: &[skirr_core::DisplayInfo],
+    bold_ids: &std::collections::HashSet<uuid::Uuid>,
+) -> TreeNode {
+    let mut children: Vec<TreeNode> = Vec::new();
+
+    // If this is a hub with known port count, emit ordered port slots.
+    if let Some(info) = &dev.hub_info {
+        let port_count = info.port_count;
+        let direct_kids = by_parent.get(&Some(dev.id));
+        for pn in 1..=port_count {
+            if let Some(kid) = direct_kids.and_then(|kids| {
+                kids.iter().find(|k| k.port_number == Some(pn))
+            }) {
+                children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+            } else {
+                children.push(TreeNode {
+                    label: "n/a".to_string(),
+                    meta: None,
+                    vid: None,
+                    pid: None,
+                    speed_mbps: None,
+                    bold: false,
+                    hub_ports: None,
+                    dock_family: None,
+                    display: None,
+                    children: Vec::new(),
+                });
+            }
+        }
+        // Also emit children that don't have a port_number (compound interfaces).
+        if let Some(kids) = direct_kids {
+            for kid in kids {
+                if kid.port_number.is_none() {
+                    children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                }
+            }
+        }
+    } else {
+        // Non-hub: just emit all direct children sorted by port.
+        if let Some(kids) = by_parent.get(&Some(dev.id)) {
+            let mut sorted = kids.clone();
+            sorted.sort_by_key(|k| k.port_number.unwrap_or(0));
+            for kid in sorted {
+                children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+            }
+        }
+    }
+
+    // Attach display info if this device is the last hop in a display's USB path.
+    let display_info = displays.iter().find_map(|d| {
+        if let Some(ref path) = d.usb_path {
+            if path.last() == Some(&dev.id) {
+                return Some(DisplayNode {
+                    name: d.name.clone().unwrap_or_else(|| "Display".to_string()),
+                    resolution: d.current_resolution.as_ref().map(|r| {
+                        format!(
+                            "{}x{}@{}Hz",
+                            r.width,
+                            r.height,
+                            d.current_refresh_rate.unwrap_or(0)
+                        )
+                    }),
+                    refresh_hz: d.current_refresh_rate,
+                    hdr: d.hdr_supported,
+                });
+            }
+        }
+        None
+    });
+
+    TreeNode {
+        label: dev
+            .product
+            .as_deref()
+            .or(dev.manufacturer.as_deref())
+            .unwrap_or("device")
+            .to_string(),
+        meta: None,
+        vid: Some(dev.vendor_id),
+        pid: Some(dev.product_id),
+        speed_mbps: Some(dev.current_link_speed.mbps()),
+        bold: bold_ids.contains(&dev.id),
+        hub_ports: dev.hub_info.as_ref().map(|h| h.port_count),
+        dock_family: dev.properties.get("dock_family").cloned(),
+        display: display_info,
+        children,
+    }
+}
+
+/// Build the complete topology view for the GUI tree renderer.
+fn build_topology_view(topo: &SystemTopology) -> TopologyView {
+    let by_parent: std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>> = {
+        let mut m: std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>> =
+            std::collections::HashMap::new();
+        for dev in &topo.devices {
+            m.entry(dev.parent_id).or_default().push(dev);
+        }
+        for kids in m.values_mut() {
+            kids.sort_by_key(|d| (d.port_number.unwrap_or(0), d.id));
+        }
+        m
+    };
+    let by_id: std::collections::HashMap<uuid::Uuid, &UsbDevice> =
+        topo.devices.iter().map(|d| (d.id, d)).collect();
+
+    // Run rule engine to identify devices exceeding platform limits.
+    let profile = skirr_core::Profile::standard_v1();
+    let diagnosis = RuleEngine::new(profile.clone()).evaluate(topo);
+    let platform = skirr_core::PlatformKey::detect(
+        &topo.platform_info.os,
+        &topo.platform_info.architecture,
+    );
+    let limits = platform.and_then(|p| profile.limits_for(p));
+    let platform_name = platform
+        .map(|p| p.display_name().to_string())
+        .unwrap_or_default();
+
+    // Collect device IDs that exceed limits (for bold rendering).
+    let mut bold_ids = std::collections::HashSet::new();
+    for issue in &diagnosis.topology_issues {
+        use skirr_core::TopologyIssueType;
+        matches!(
+            issue.issue_type,
+            TopologyIssueType::TooManyHubs
+                | TopologyIssueType::TooManyHops
+                | TopologyIssueType::TooManyTiers
+        )
+        .then(|| bold_ids.insert(issue.device_id));
+    }
+
+    // Build warning lines from failed/warning rule evaluations.
+    let warnings: Vec<WarningLine> = diagnosis
+        .rules_applied
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.verdict,
+                skirr_core::Verdict::Warning | skirr_core::Verdict::Fail
+            ) && (r.rule_id == "max_hops"
+                || r.rule_id == "max_tiers"
+                || r.rule_id == "max_hubs"
+                || r.rule_id == "platform_limits")
+        })
+        .map(|r| WarningLine {
+            severity: format!("{:?}", r.verdict).to_lowercase(),
+            text: r.explanation.clone(),
+        })
+        .collect();
+
+    // Build speed bottleneck warnings.
+    for b in &diagnosis.bottlenecks {
+        use skirr_core::BottleneckSeverity;
+        if b.severity != BottleneckSeverity::Minor {
+            bold_ids.insert(b.device_id);
+            warnings.push(WarningLine {
+                severity: "warning".to_string(),
+                text: format!(
+                    "Speed bottleneck: device supports {} but runs at {}",
+                    b.max_speed.marketing_name(),
+                    b.current_speed.marketing_name()
+                ),
+            });
+        }
+    }
+
+    // Collect internal devices for the "Internal" section.
+    let mut internal_nodes: Vec<TreeNode> = Vec::new();
+    if let Some(roots) = by_parent.get(&None) {
+        for dev in roots {
+            if dev.is_internal {
+                internal_nodes.push(build_tree_node(
+                    dev,
+                    &by_parent,
+                    &by_id,
+                    &topo.displays,
+                    &bold_ids,
+                ));
+            }
+        }
+    }
+
+    // Build port trees: one per root hub.
+    let mut port_nodes: Vec<TreeNode> = Vec::new();
+    for rh in &topo.root_hubs {
+        let tier1: Vec<&UsbDevice> = by_parent
+            .get(&None)
+            .map(|roots| {
+                roots
+                    .iter()
+                    .copied()
+                    .filter(|d| d.root_hub_id == Some(rh.id) && !d.is_internal)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for dev in &tier1 {
+            if let Some(pn) = dev.port_number {
+                // Compute worst-case chain metrics for this port.
+                let mut worst_hops: u8 = 0;
+                let mut worst_hubs: u8 = 0;
+                let mut worst_tiers: u8 = 0;
+
+                // Recursive function to walk all descendants and find worst metrics.
+                fn walk_descendants(
+                    dev_id: uuid::Uuid,
+                    by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
+                    by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
+                    worst: &mut (u8, u8, u8),
+                ) {
+                    if let Some(kids) = by_parent.get(&Some(dev_id)) {
+                        for kid in kids {
+                            let (h, eh, t) = chain_metrics_for(kid.id, by_id);
+                            if h > worst.0 {
+                                worst.0 = h;
+                            }
+                            if eh > worst.1 {
+                                worst.1 = eh;
+                            }
+                            if t > worst.2 {
+                                worst.2 = t;
+                            }
+                            walk_descendants(kid.id, by_parent, by_id, worst);
+                        }
+                    }
+                }
+
+                let mut worst = (0u8, 0u8, 0u8);
+                walk_descendants(dev.id, &by_parent, &by_id, &mut worst);
+                // Include the port device itself.
+                let (dh, deh, dt) = chain_metrics_for(dev.id, &by_id);
+                worst.0 = worst.0.max(dh);
+                worst.1 = worst.1.max(deh);
+                worst.2 = worst.2.max(dt);
+
+                let mut node = build_tree_node(
+                    dev,
+                    &by_parent,
+                    &by_id,
+                    &topo.displays,
+                    &bold_ids,
+                );
+                node.meta = Some(format!(
+                    "(Hops {}, Hubs {}, Tiers {})",
+                    worst.0, worst.1, worst.2
+                ));
+                port_nodes.push(node);
+            }
+        }
+
+        // Emit empty port slots.
+        let occupied: Vec<u8> = tier1.iter().filter_map(|d| d.port_number).collect();
+        for p in 1..=rh.port_count {
+            if !occupied.contains(&p) {
+                port_nodes.push(TreeNode {
+                    label: format!("Port {p}"),
+                    meta: Some("(free)".to_string()),
+                    vid: None,
+                    pid: None,
+                    speed_mbps: None,
+                    bold: false,
+                    hub_ports: None,
+                    dock_family: None,
+                    display: None,
+                    children: Vec::new(),
+                });
+            }
+        }
+    }
+    port_nodes.sort_by_key(|n| {
+        // Extract port number from label "Port N".
+        n.label
+            .strip_prefix("Port ")
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(0)
+    });
+
+    // Merge internal + ports under HOST.
+    let mut host_children: Vec<TreeNode> = Vec::new();
+    for n in internal_nodes {
+        host_children.push(n);
+    }
+    for n in port_nodes {
+        host_children.push(n);
+    }
+
+    let root = TreeNode {
+        label: "HOST".to_string(),
+        meta: None,
+        vid: None,
+        pid: None,
+        speed_mbps: None,
+        bold: false,
+        hub_ports: None,
+        dock_family: None,
+        display: None,
+        children: host_children,
+    };
+
+    TopologyView {
+        root,
+        warnings,
+        platform: limits.map(|l| PlatformLimits {
+            name: platform_name,
+            max_hops: l.max_hops,
+            max_tiers: l.max_tiers,
+            max_hubs: l.max_hubs,
+        }),
         tb_routers: topo.thunderbolt_routers.clone(),
     }
 }
@@ -470,6 +952,15 @@ fn get_port_chains() -> Result<TopologyChains, String> {
 }
 
 #[tauri::command]
+fn get_topology_view() -> Result<TopologyView, String> {
+    let topo = build_backend()
+        .map_err(|e| e.to_string())?
+        .get_topology()
+        .map_err(|e| e.to_string())?;
+    Ok(build_topology_view(&topo))
+}
+
+#[tauri::command]
 fn diagnose() -> Result<DiagnosticResult, String> {
     let backend = build_backend().map_err(|e| e.to_string())?;
     let topo = backend.get_topology().map_err(|e| e.to_string())?;
@@ -480,6 +971,63 @@ fn diagnose() -> Result<DiagnosticResult, String> {
 fn get_topology_json() -> Result<serde_json::Value, String> {
     let topo = build_backend().map_err(|e| e.to_string())?.get_topology();
     serde_json::to_value(topo.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateInfo {
+    current: String,
+    latest: String,
+    url: String,
+    update_available: bool,
+}
+
+#[tauri::command]
+async fn check_for_update(always_latest: bool) -> Result<UpdateInfo, String> {
+    let current_str = env!("CARGO_PKG_VERSION");
+    let current = Version::parse(current_str).unwrap_or(Version {
+        major: 0,
+        minor: 0,
+        patch: 0,
+        tier: Tier::Stable,
+        revision: 0,
+    });
+
+    let client = reqwest::Client::builder()
+        .user_agent("skirr-gui")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get("https://api.github.com/repos/klangche/skirr/releases/latest")
+        .send()
+        .await
+        .map_err(|e| format!("network error: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned {}", resp.status()));
+    }
+
+    let release: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse error: {e}"))?;
+
+    let tag_name = release["tag_name"]
+        .as_str()
+        .ok_or("missing tag_name in release")?;
+    let html_url = release["html_url"]
+        .as_str()
+        .unwrap_or("https://github.com/klangche/skirr/releases")
+        .to_string();
+
+    let candidate = Version::parse(tag_name).ok_or_else(|| format!("invalid version: {tag_name}"))?;
+
+    Ok(UpdateInfo {
+        current: current_str.to_string(),
+        latest: tag_name.to_string(),
+        url: html_url,
+        update_available: should_update(&current, &candidate, always_latest),
+    })
 }
 
 #[tauri::command]
@@ -545,7 +1093,7 @@ fn monitor_start(app: AppHandle) -> Result<bool, String> {
     let state = app.state::<AppState>();
     if state
         .monitor_running
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .compare_exchange(false, true, AtomicOrdering::SeqCst, AtomicOrdering::SeqCst)
         .is_err()
     {
         return Ok(false); // already running
@@ -557,7 +1105,7 @@ fn monitor_start(app: AppHandle) -> Result<bool, String> {
         handle
             .state::<AppState>()
             .monitor_running
-            .store(false, Ordering::SeqCst);
+            .store(false, AtomicOrdering::SeqCst);
         let message = result
             .map_err(|e| e.to_string())
             .err()
@@ -571,7 +1119,7 @@ fn monitor_start(app: AppHandle) -> Result<bool, String> {
 fn monitor_stop(app: AppHandle) -> Result<(), String> {
     app.state::<AppState>()
         .monitor_running
-        .store(false, Ordering::SeqCst);
+        .store(false, AtomicOrdering::SeqCst);
     Ok(())
 }
 
@@ -586,7 +1134,7 @@ fn run_monitor_loop(handle: &AppHandle) -> BackendResult<()> {
     while handle
         .state::<AppState>()
         .monitor_running
-        .load(Ordering::SeqCst)
+        .load(AtomicAtomicOrdering::SeqCst)
     {
         match session.poll_event(Duration::from_millis(250))? {
             Some(event) => {
@@ -680,9 +1228,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_overview,
             get_port_chains,
+            get_topology_view,
             get_topology_json,
             get_details,
             diagnose,
+            check_for_update,
             generate_report,
             monitor_start,
             monitor_stop,
@@ -875,5 +1425,90 @@ mod tests {
         assert_eq!(head.speed_mbps, 5000);
         assert!(head.is_hub);
         assert_eq!(head.hub_ports, None, "fixture hub has no HubInfo");
+    }
+
+    // --- Version parsing tests ---
+
+    #[test]
+    fn version_parse_stable() {
+        let v = Version::parse("0.1.0").unwrap();
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 1);
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.tier, Tier::Stable);
+        assert_eq!(v.revision, 0);
+    }
+
+    #[test]
+    fn version_parse_alpha() {
+        let v = Version::parse("v0.1.0-alpha.5").unwrap();
+        assert_eq!(v.tier, Tier::Alpha);
+        assert_eq!(v.revision, 5);
+    }
+
+    #[test]
+    fn version_parse_beta() {
+        let v = Version::parse("v0.2.3-beta.12").unwrap();
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+        assert_eq!(v.tier, Tier::Beta);
+        assert_eq!(v.revision, 12);
+    }
+
+    #[test]
+    fn version_ordering() {
+        let alpha3 = Version::parse("0.1.0-alpha.3").unwrap();
+        let alpha5 = Version::parse("0.1.0-alpha.5").unwrap();
+        let beta1 = Version::parse("0.1.0-beta.1").unwrap();
+        let stable = Version::parse("0.1.0").unwrap();
+        let stable11 = Version::parse("0.1.1").unwrap();
+
+        assert!(alpha3 < alpha5);
+        assert!(alpha5 < beta1);
+        assert!(beta1 < stable);
+        assert!(stable < stable11);
+    }
+
+    #[test]
+    fn should_update_within_tier() {
+        let current = Version::parse("0.1.0-alpha.3").unwrap();
+        let newer = Version::parse("0.1.0-alpha.5").unwrap();
+        let older = Version::parse("0.1.0-alpha.2").unwrap();
+        assert!(should_update(&current, &newer, false));
+        assert!(!should_update(&current, &older, false));
+    }
+
+    #[test]
+    fn should_update_forward_tier_default() {
+        let current = Version::parse("0.1.0-alpha.3").unwrap();
+        let beta = Version::parse("0.1.0-beta.1").unwrap();
+        let stable = Version::parse("0.1.0").unwrap();
+        assert!(should_update(&current, &beta, false));
+        assert!(should_update(&current, &stable, false));
+    }
+
+    #[test]
+    fn should_not_update_backward_tier_default() {
+        let current = Version::parse("0.1.0-beta.2").unwrap();
+        let alpha = Version::parse("0.1.0-alpha.5").unwrap();
+        assert!(!should_update(&current, &alpha, false));
+    }
+
+    #[test]
+    fn should_update_always_latest_any_tier() {
+        let current = Version::parse("0.1.0-beta.2").unwrap();
+        let alpha = Version::parse("0.2.0-alpha.1").unwrap();
+        assert!(should_update(&current, &alpha, true));
+    }
+
+    #[test]
+    fn should_never_downgrade() {
+        let current = Version::parse("0.1.0-alpha.5").unwrap();
+        let older = Version::parse("0.1.0-alpha.3").unwrap();
+        let lower_tier = Version::parse("0.0.9").unwrap();
+        assert!(!should_update(&current, &older, false));
+        assert!(!should_update(&current, &older, true));
+        assert!(!should_update(&current, &lower_tier, true));
     }
 }

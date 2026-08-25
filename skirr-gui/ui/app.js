@@ -99,6 +99,40 @@ function initGatekeeperCard() {
   });
 }
 
+// --- Update check -----------------------------------------------------------
+
+const ALWAYS_LATEST_KEY = "skirr-always-latest";
+
+function initUpdateCheck() {
+  const toggle = $("#always-latest-toggle");
+  if (toggle) {
+    toggle.checked = localStorage.getItem(ALWAYS_LATEST_KEY) === "true";
+    toggle.addEventListener("change", (e) => {
+      localStorage.setItem(ALWAYS_LATEST_KEY, String(e.target.checked));
+      // Re-check with new preference.
+      runUpdateCheck();
+    });
+  }
+  runUpdateCheck();
+}
+
+async function runUpdateCheck() {
+  const alwaysLatest = localStorage.getItem(ALWAYS_LATEST_KEY) === "true";
+  try {
+    const info = await invoke("check_for_update", { alwaysLatest });
+    const banner = $("#update-banner");
+    if (info.update_available) {
+      banner.innerHTML = `Update: ${esc(info.latest)} (you have ${esc(info.current)}) `
+        + `<a href="${esc(info.url)}" target="_blank" rel="noopener" class="update-link">Download</a>`;
+      banner.classList.remove("hidden");
+    } else {
+      banner.classList.add("hidden");
+    }
+  } catch (_e) {
+    // Silent — network errors on first launch are expected.
+  }
+}
+
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = String(s);
@@ -142,34 +176,85 @@ async function loadDetails() {
   return detailsCache;
 }
 
-function nodeHtml(n, depth) {
-  const ids = `<span class="ids">${n.vid.toString(16).padStart(4, "0")}:${n.pid.toString(16).padStart(4, "0")}</span>`;
-  const speed = n.speed_mbps ? ` <span class="speed">${n.speed_mbps} Mbps</span>` : "";
-  const hubPorts = n.hub_ports != null ? `[HUB ${n.hub_ports}p]` : n.is_hub ? "[HUB]" : "";
-  const hubmark = hubPorts ? ` <span class="hubmark">${hubPorts}</span>` : "";
-  const dock = n.dock_family ? ` <span class="dock">${esc(n.dock_family)}</span>` : "";
-  const kids = n.children.length
-    ? `<ul>${n.children.map((c) => `<li>${nodeHtml(c, depth + 1)}</li>`).join("")}</ul>`
-    : "";
-  return `<span class="dev clickable" data-device-id="${n.id}" title="Show details">`
-    + `${esc(n.label)} ${ids}${hubmark}${speed}${dock}</span>${kids}`;
+// Render a TreeNode as ASCII-art tree lines with proper connectors.
+// prefix = the indentation string before this node's connector.
+function renderNode(node, prefix, isLast) {
+  const connector = isLast ? "└── " : "├── ";
+  const childPrefix = isLast ? prefix + "    " : prefix + "│   ";
+
+  // Build label parts.
+  let label = "";
+  if (node.bold) {
+    label += `<strong>${esc(node.label)}</strong>`;
+  } else {
+    label += esc(node.label);
+  }
+  if (node.vid != null) {
+    label += ` <span class="ids">${node.vid.toString(16).padStart(4, "0")}:${node.pid.toString(16).padStart(4, "0")}</span>`;
+  }
+  if (node.hub_ports != null) {
+    label += ` <span class="hubmark">[HUB ${node.hub_ports}p]</span>`;
+  } else if (node.label !== "n/a" && node.label !== "HOST" && !node.label.startsWith("Port ")) {
+    // Non-hub, non-empty device — show nothing special
+  }
+  if (node.speed_mbps) {
+    label += ` <span class="speed">${node.speed_mbps} Mbps</span>`;
+  }
+  if (node.dock_family) {
+    label += ` <span class="dock">${esc(node.dock_family)}</span>`;
+  }
+  if (node.meta) {
+    label += ` <span class="meta">${esc(node.meta)}</span>`;
+  }
+  if (node.display) {
+    const d = node.display;
+    let dispLabel = ` → ${esc(d.name)}`;
+    if (d.resolution) dispLabel += ` (${esc(d.resolution)})`;
+    if (d.hdr) dispLabel += ` <span class="sev-info">HDR</span>`;
+    label += `<span class="display-info">${dispLabel}</span>`;
+  }
+
+  const id = node.vid != null ? ` data-device-id="${esc(node.label)}"` : "";
+  let html = `<div class="tree-line">${prefix}${connector}<span class="dev${id ? " clickable" : ""}"${id} title="Show details">${label}</span></div>`;
+
+  for (let i = 0; i < node.children.length; i++) {
+    html += renderNode(node.children[i], childPrefix, i === node.children.length - 1);
+  }
+  return html;
 }
 
 async function loadTopology() {
   clearError("#topology-error");
   return withSpinner("#topology-content", async () => {
   try {
-    const [t] = await Promise.all([invoke("get_port_chains"), loadDetails()]);
+    const [view, _details] = await Promise.all([invoke("get_topology_view"), loadDetails()]);
     let html = "";
 
-    if (t.internal.length) {
-      html += `<h3 class="internal-h">Internal</h3><ul class="tree">${
-        t.internal.map((n) => `<li>${nodeHtml(n, 0)}</li>`).join("")}</ul>`;
+    // Warnings section (above the tree).
+    if (view.warnings?.length) {
+      html += `<div class="warning-section">`;
+      for (const w of view.warnings) {
+        const cls = w.severity === "critical" ? "critical" : "warn";
+        html += `<div class="warning-line ${cls}">⚠ ${esc(w.text)}</div>`;
+      }
+      html += `</div>`;
     }
 
-    if (t.tb_routers?.length) {
+    // Platform limits summary.
+    if (view.platform) {
+      const p = view.platform;
+      html += `<div class="platform-limits">${esc(p.name)} limits — Hops: ${p.max_hops}, Hubs: ${p.max_hubs}, Tiers: ${p.max_tiers}</div>`;
+    }
+
+    // Main tree: render from HOST root.
+    html += `<div class="topology-tree">`;
+    html += renderNode(view.root, "", true);
+    html += `</div>`;
+
+    // Thunderbolt / USB4 section.
+    if (view.tb_routers?.length) {
       html += `<h3 class="internal-h">Thunderbolt / USB4</h3><ul class="tb-routers">${
-        t.tb_routers
+        view.tb_routers
           .map((r) => {
             const kind = r.is_usb4 ? "USB4" : "Thunderbolt";
             const gen = r.generation ? ` ${r.generation}` : "";
@@ -187,58 +272,29 @@ async function loadTopology() {
           .join("")}</ul>`;
     }
 
-    html += `<h3 class="internal-h">External — one chain per port</h3>`;
-    for (const rh of t.external) {
-      const portsHtml = rh.ports
-        .map((p) => {
-          const label = p.port != null ? `Port ${p.port}` : "Port ?";
-          return `<div class="port-line">${label}</div><ul class="tree"><li>${nodeHtml(p.root, 0)}</li></ul>`;
-        })
-        .join("");
-      const free = rh.free_ports.length
-        ? `<div class="free">Ports free: ${rh.free_ports.join(", ")}</div>`
-        : "";
-      html += `<details class="rh-section" open><summary class="rh-title">${
-        esc(rh.platform_id)} (${rh.port_count} ports)</summary><div class="rh-body">${portsHtml}${free}</div></details>`;
-    }
-
-    html += renderHubMaps();
-
-    if (!html.replace(/<h3[^>]*>[^<]*<\/h3>/g, "").trim()) {
+    if (!html.trim()) {
       html += "<p class='free'>(nothing attached)</p>";
     }
     $("#topology-content").innerHTML = html;
 
-    document.querySelectorAll(".rh-section .rh-title").forEach((title) => {
-      title.addEventListener("click", () => title.parentElement.classList.toggle("closed"));
-    });
+    // Click handler for device details.
     document.querySelectorAll(".dev.clickable").forEach((el) => {
-      el.addEventListener("click", () => showDeviceDetails(el.dataset.deviceId));
+      el.addEventListener("click", () => {
+        const devLabel = el.dataset.deviceId;
+        // Find device in details cache by matching label.
+        if (detailsCache?.devices) {
+          const match = detailsCache.devices.find((d) => d.label === devLabel);
+          if (match) {
+            showDeviceDetails(match.id);
+            return;
+          }
+        }
+      });
     });
   } catch (e) {
       showError("#topology-error", String(e));
   }
   });
-}
-
-// Hub port maps: one collapsible map per physical hub, rendered after the
-// root-hub chain sections.
-function renderHubMaps() {
-  if (!detailsCache?.hubs?.length) return "";
-  return detailsCache.hubs
-    .map((hub) => {
-      const slots = hub.ports
-        .map((s) => {
-          const occupant = s.device_label
-            ? `${esc(s.device_label)} <span class="ids">${s.vid.toString(16).padStart(4, "0")}:${s.pid.toString(16).padStart(4, "0")}</span>`
-            : "<span class='free'>empty</span>";
-          return `<tr><td>p${s.number}</td><td>${occupant}</td></tr>`;
-        })
-        .join("");
-      return `<details class="hub-map"><summary class="rh-title">Port map — ${esc(hub.label)} (${hub.port_count}p)</summary>`
-        + `<table class="rule-table"><tr><th>Port</th><th>Device</th></tr>${slots}</table></details>`;
-    })
-    .join("");
 }
 
 // --- Device details panel ------------------------------------------------------
@@ -419,6 +475,7 @@ $("#report-save").addEventListener("click", async () => {
 
 initTheme();
 initGatekeeperCard();
+initUpdateCheck();
 loadOverview();
 initMonitor();
 

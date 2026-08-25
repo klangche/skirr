@@ -143,6 +143,45 @@ button:disabled { opacity: 0.5; cursor: default; }
 .free { color: var(--muted); font-style: italic; margin-top: 0.8rem; }
 .internal-h { color: var(--muted); font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 1.5rem; }
 
+/* Topology tree — ASCII connector rendering */
+.topology-tree {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+.tree-line { white-space: nowrap; }
+.tree-line strong { font-weight: 700; }
+.tree-line .meta { color: var(--muted); font-size: 0.85em; }
+.tree-line .display-info { color: var(--accent); font-size: 0.85em; }
+.tree-line .dev.clickable { cursor: pointer; border-radius: 0.2rem; }
+.tree-line .dev.clickable:hover { background: rgba(47, 129, 247, 0.15); }
+
+/* Warnings section below topology tree */
+.warning-section {
+  background: rgba(191, 135, 0, 0.1);
+  border: 1px solid var(--warn);
+  border-radius: 0.6rem;
+  padding: 0.7rem 1rem;
+  margin-bottom: 1rem;
+}
+.warning-line {
+  color: var(--warn);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.warning-line.critical { color: var(--fail); }
+.platform-limits {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
 /* Monitor log */
 .log {
   background: var(--bg-card);
@@ -190,6 +229,36 @@ html[data-theme="dark"] {
 }
 .icon-btn:hover { color: var(--text); border-color: var(--accent); }
 header h1 { margin-right: auto; }
+
+/* Update banner */
+.update-banner {
+  background: rgba(26, 127, 55, 0.12);
+  border: 1px solid var(--pass);
+  border-radius: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.update-link {
+  color: var(--accent);
+  text-decoration: underline;
+  margin-left: 0.4rem;
+}
+.update-link:hover { color: var(--text); }
+
+/* Always-latest toggle */
+.always-latest-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.always-latest-toggle input {
+  accent-color: var(--accent);
+}
 
 /* Toasts */
 #toasts {

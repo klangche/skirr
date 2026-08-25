@@ -9,6 +9,7 @@
 <body>
   <header>
     <h1>Skirr <span class="muted">USB diagnostics</span></h1>
+    <div id="update-banner" class="update-banner hidden"></div>
     <nav id="tabs">
       <button data-view="overview" class="tab active">Overview</button>
       <button data-view="topology" class="tab">Topology</button>
@@ -17,6 +18,10 @@
       <button data-view="diagnose" class="tab">Diagnose</button>
       <button data-view="report" class="tab">Report</button>
     </nav>
+    <label class="always-latest-toggle" title="Update across tiers (alpha ↔ beta ↔ stable)">
+      <input type="checkbox" id="always-latest-toggle" />
+      Always latest
+    </label>
     <button id="theme-toggle" class="icon-btn" title="Toggle dark/light theme">◐</button>
   </header>
 
