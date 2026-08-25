@@ -12,7 +12,7 @@ pub fn create_backend() -> BackendResult<Box<dyn UsbBackend>> {
     }
     #[cfg(target_os = "windows")]
     {
-        Ok(Box::new(skirr_windows::create_backend()))
+        Ok(skirr_windows::create_backend())
     }
     #[cfg(target_os = "linux")]
     {
