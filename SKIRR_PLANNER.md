@@ -554,5 +554,5 @@ Known notes:
 
 **Reference**: .github/workflows/ci.yml (active), release.yml (tag-triggered), SKIRR_PLANNER.md
 ---
-*Last updated: 2026-08-25 | Alpha tag v0.1.0-alpha.1 created (ready to push). Phase 5.3 macOS ARM64 sweep done. CI re-enabled and green on all 3 platforms. Zip bundle deferred (crate yanked). Workspace 185 tests green. Remaining: Windows/Ubuntu hardware sweeps.*
+*Last updated: 2026-08-25 | Alpha tag v0.1.0-alpha.1 created. Push tag with `git push origin v0.1.0-alpha.1` (or via Git Desktop: Push → Include tags) to trigger release build on all 3 platforms.*
 ---
