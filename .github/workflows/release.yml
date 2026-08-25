@@ -51,6 +51,7 @@ jobs:
         id: version
         shell: bash
         run: |
+          set -euo pipefail
           BASE="0.1.0"
           RUN="${GITHUB_RUN_NUMBER}"
           if [ "${{ github.ref_name }}" = "main" ]; then
@@ -63,6 +64,7 @@ jobs:
         if: steps.version.outputs.version != '0.1.0'
         shell: bash
         run: |
+          set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
           for toml in skirr-*/Cargo.toml; do
             sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" "$toml"
@@ -70,7 +72,9 @@ jobs:
           done
 
       - name: Build (release)
+        shell: bash
         run: |
+          set -euo pipefail
           if [ "$RUNNER_OS" = "MacOS" ]; then
             cargo build --release -p skirr-cli --target aarch64-apple-darwin
             cargo build --release -p skirr-cli --target x86_64-apple-darwin
@@ -182,7 +186,7 @@ jobs:
           # Smoke test before packing.
           "$STAGING/usr/bin/skirr" --help > /dev/null
           dpkg-deb --build "$STAGING"
-          mv "skirr_${VERSION}_amd64.deb" "${{ matrix.artifact }}.deb"
+          mv "$STAGING.deb" "${{ matrix.artifact }}.deb"
           sha256sum "${{ matrix.artifact }}.deb" > "${{ matrix.artifact }}.deb.sha256"
 
       - name: Upload artifact
