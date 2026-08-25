@@ -271,13 +271,15 @@ CI must build all four artifacts on every release tag.
 - [x] Run on macOS ARM64 (Apple Silicon) + macOS x64 (Intel) *(ARM64 done on dev host; Intel pending runner/hardware — folded into 🟡 sweep)*
 - [x] Universal macOS binary *(user-directed, 2026-08-24: release.yml now builds both slices on the Apple Silicon runner via cross-compilation and `lipo`s them — macos-13 Intel runner pool queues for days; single `skirr-macos-universal.dmg` artifact replaces arm64+x64 pair. Verified locally on dev host: both targets build, lipo → "x86_64 arm64", fat binary runs)*
 - [~] Run on Ubuntu 22.04
-- [x] Verify topology matches system_profiler/Device Manager *(dev host: both report zero devices — consistent; device-bearing comparison pending hardware)*
+- [x] Verify topology matches system_profiler/Device Manager *(ARM64 sweep 2026-08-25: Thunderbolt/USB4 topology matches — 3 host routers with correct UIDs, route strings, receptacle IDs (1/2/3), 40 Gb/s speeds; receptacle ID bug fixed: was reading from key name `receptacle_1_tag` instead of `receptacle_id_key` field)*
 - [x] Verify speed detection accuracy *(no devices attached: Unknown-speed paths exercised; populated-bus verification pending hardware)*
-- [x] Verify rule engine produces correct verdicts *(diagnose: 5 facts, 3 rules → PASS on clean host; rule unit tests cover Warning/Fail branches)*
-- [x] Verify CLI commands all work *(scan/usb/topology/hubs/ports/diagnose/report all exit 0 live; monitor unit-covered)*
-- [x] Verify JSON output schema matches spec *(usb/diagnose/report JSON parsed + key-checked via python json.load; serde types are the schema source)*
-- **Progress: ~80%**
-- **Notes**: All locally-runnable verification done on the Apple Silicon dev host (zero USB devices attached — empty-but-valid topology everywhere, cross-checked against system_profiler). Windows x64 and Ubuntu rows need real runners → covered by release.yml smoke steps at tag time; admin/non-admin matrix + populated-bus accuracy fold into the 🟡 review sweep alongside Phase 2's native-path review.
+- [x] Verify rule engine produces correct verdicts *(ARM64 sweep: diagnose reports 5 facts, 3 rules → PASS on clean host; no false FAIL on empty bus)*
+- [x] Verify CLI commands all work *(ARM64 sweep: scan/usb/topology/hubs/ports/diagnose/report all exit 0; topology renders 3 TB routers with correct receptacle IDs; JSON and HTML reports generated successfully)*
+- [x] Verify JSON output schema matches spec *(ARM64 sweep: topology JSON has correct thunderbolt_routers with receptacle IDs from `receptacle_id_key`; report JSON round-trips cleanly with schema_version 1.0)*
+- [x] Verify HTML report renders correctly *(ARM64 sweep: HTML report contains Platform, Topology, Thunderbolt (3 routers with Receptacle 1/2/3), Recommendations, Events sections; all CSS/embedded, no external deps)*
+- [x] Display enumeration: honest absence *(ARM64 sweep: built-in display uses DCP, not IODisplayConnect; skirr correctly reports 0 displays — no fabricated data; external USB/Thunderbolt displays would be detected)*
+- **Progress: ~85%**
+- **Notes**: macOS ARM64 sweep done 2026-08-25 on dev host (Apple M1 Max, 3 TB buses, 0 USB devices). Fixed receptacle ID parsing bug (thunderbolt.rs: `receptacle_id_key` field now preferred over key-name extraction). Display enumeration correctly reports honest absence for Apple Silicon built-in display (DCP-connected, not IODisplayConnect). Windows x64 and Ubuntu rows need real runners → covered by release.yml smoke steps at tag time; admin/non-admin matrix + populated-bus accuracy fold into the 🟡 review sweep alongside Phase 2's native-path review.
 
 ---
 
@@ -489,7 +491,7 @@ CI must build all four artifacts on every release tag.
 | 2 | Windows Backend | 100% | [x] Completed (🟡 native paths need Windows-runner review) |
 | 3 | macOS Backend | 100% | [x] Completed (dev-host live-tested; hardware sweep pending) |
 | 4 | CLI | 100% | [x] Completed (all commands live-smoke-tested) |
-| 5 | Distribution & Documentation | 90% | [~] In progress (5.1–5.2 done; 5.3 macOS done, Win/Ubuntu at tag time) |
+| 5 | Distribution & Documentation | 90% | [~] In progress (5.1–5.2 done; 5.3 macOS ARM64 sweep done, Win/Ubuntu at tag time) |
 | 6 | Linux Backend | 100% | [x] Completed (🟡 native paths need Linux-runner review) |
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
 | 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
@@ -497,22 +499,24 @@ CI must build all four artifacts on every release tag.
 | 10 | Advanced Features (P2) | 100% | [x] Completed (10.1 live-verified TB/USB4 + bandwidth; 10.2 Type-C power (Linux-only data, macOS/Windows gaps documented); 10.3 display planning; 10.4 root-cause/periodicity/display correlation + `--timeline` export) |
 | 11 | Hardware Details (P3) | 100% | [x] Completed (11.1 PDO parser + PPS + contract history + cable wattage; 11.2 CableDetails struct + CC pin + speed hint; 11.3 DeviceErrorStats + debugfs LTSSM/link counters; 185 tests green) |
 
-**Total Project Progress: 66%** *(phase-weighted: Phases 0–4, 6–7, 9–11 complete; 5 & 8 nearly done; all implementation phases complete — remaining work is polish, verification sweeps, and release packaging)*
+**Total Project Progress: 67%** *(phase-weighted: Phases 0–4, 6–7, 9–11 complete; 5 & 8 nearly done; all implementation phases complete — remaining work is polish, verification sweeps, and release packaging)*
 
-### CI Status (re-enabled 2026-08-25)
+### CI Status (re-enabled 2026-08-25, green on all platforms)
 
 **Automatic CI is ACTIVE on `dev` and `main`.** Triggered on every push and pull request.
 
 Pipeline per platform (ubuntu-22.04, macos-14, windows-latest):
-1. `cargo fmt --all -- --check`
-2. `cargo clippy --workspace --all-targets -- -D warnings`
-3. `cargo test --workspace`
-4. `cargo run -p skirr-cli -- --help` (smoke test)
+1. Version stamp: `0.1.0-alpha.N` (dev) / `0.1.0-beta.N` (main)
+2. `cargo fmt --all -- --check`
+3. `cargo clippy --workspace --all-targets -- -D warnings`
+4. `cargo test --workspace`
+5. `cargo run -p skirr-cli -- --help` (smoke test)
 
 Known notes:
 - Ubuntu runner installs `pkg-config` + `libudev-dev` before clippy/test (libudev linkage).
 - GUI crate (`skirr-gui/src-tauri`) not in CI — Tauri build requires Node.js; deferred until stable.
 - Release workflow (`release.yml`) remains tag-triggered and independent.
+- `actions/checkout@v5` (Node.js 20 deprecation resolved).
 
 ---
 
@@ -530,23 +534,25 @@ Known notes:
 
 ## Next Task for Agent
 
-**Current**: Phase 5.3 / CI Re-enable — Remaining work is verification sweeps and CI.
-**Action**: Two tracks remain:
+**Current**: Phase 5.3 residuals / Phase 8 polish — macOS ARM64 sweep done, remaining work is hardware sweeps on other platforms + HTML report zip bundle.
+**Action**:
 
 **Track 1 — Hardware verification sweeps (Phase 5.3 residuals)**:
 - Windows x64: Run `skirr topology`, `skirr usb`, `skirr diagnose`, `skirr report` on Windows with USB devices attached; confirm Device Manager topology matches; verify Type-C PD data (Windows: honest empty from Phase 10.2 — confirm nothing fabricated)
 - Ubuntu 22.04: Run same suite on Linux host with devices; confirm sysfs walkers populate `type_c_ports` (PDO list, E-marker), `thunderbolt_routers`, `error_counters`; test with debugfs mounted for LTSSM
-- Verify populated-bus topology matches `lsusb -t` (Linux) / `system_profiler SPUSBDataType` (macOS)
+- Verify populated-bus topology matches `lsusb -t` (Linux) / `system_profiler SPUSBDataType` (macOS) with real devices
 - Verify speed detection accuracy with real SuperSpeed/USB4 devices
 - Hardware sweep of rule engine verdicts against real device mix
 
-**Track 2 — CI re-enable** (see CI Status block in this file):
-- Fix ubuntu runner: install `pkg-config` + `libudev-dev` before clippy/test (already documented in ci.yml comment)
-- Optionally add `skirr-gui/src-tauri` to CI (needs node setup for tauri build, or just `cargo check -p skirr-gui` without full Tauri compilation)
-- Re-enable `workflow_dispatch` → `push/pull_request` triggers in ci.yml
-- Verify CI passes on first push after fix
+**Track 2 — Phase 8 polish**:
+- HTML report zip bundle (embed JSON + HTML in single downloadable archive)
 
-**Reference**: .github/workflows/ci.yml (paused triggers at top), release.yml (tag-triggered, unaffected), SKIRR_PLANNER.md CI Status section
+**Track 3 — CI (already re-enabled and green)**:
+- CI triggers active on push to main/dev + pull_request
+- Version stamping: 0.1.0-alpha.N (dev), 0.1.0-beta.N (main)
+- All 3 platforms passing (ubuntu-22.04, macos-14, windows-latest)
+
+**Reference**: .github/workflows/ci.yml (active), release.yml (tag-triggered), SKIRR_PLANNER.md
 ---
-*Last updated: 2026-08-25 | Phase 11 complete: PDO/APDO parser + PPS detection + contract history + cable wattage (11.1), CableDetails struct + CC pin + speed hint (11.2), DeviceErrorStats + debugfs LTSSM/link counters (11.3). Workspace 185 tests green. All implementation phases (0–4, 6–11) complete; remaining work = hardware verification sweeps + CI re-enable.*
+*Last updated: 2026-08-25 | Phase 5.3 macOS ARM64 sweep done: receptacle ID bug fixed (receptacle_id_key field), display honest absence confirmed, all CLI commands validated, JSON/HTML reports verified. CI re-enabled and green on all 3 platforms. Workspace 185 tests green. Remaining: Windows/Ubuntu hardware sweeps + Phase 8 zip bundle.*
 ---

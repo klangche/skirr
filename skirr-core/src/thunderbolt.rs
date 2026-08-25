@@ -128,10 +128,12 @@ fn parse_receptacle(bare_key: &str, obj: &Value) -> TbReceptacle {
             .map(str::to_string)
     };
     TbReceptacle {
-        id: bare_key
-            .strip_prefix("receptacle_")
-            .and_then(|s| s.strip_suffix("_tag"))
-            .map(str::to_string),
+        id: str_at("receptacle_id").or_else(|| {
+            bare_key
+                .strip_prefix("receptacle_")
+                .and_then(|s| s.strip_suffix("_tag"))
+                .map(str::to_string)
+        }),
         status: str_at("receptacle_status"),
         current_speed: str_at("current_speed"),
         link_status: str_at("link_status"),
@@ -273,7 +275,7 @@ mod tests {
         assert_eq!(r.depth, 0, "host router at route 0");
         assert_eq!(r.receptacles.len(), 1);
         let rec = &r.receptacles[0];
-        assert_eq!(rec.id.as_deref(), Some("1"));
+        assert_eq!(rec.id.as_deref(), Some("3"));
         assert_eq!(
             rec.status.as_deref(),
             Some("receptacle_no_devices_connected")
