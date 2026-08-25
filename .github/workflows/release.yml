@@ -34,8 +34,7 @@ jobs:
           # days, and lipo needs no Intel hardware at all.
           - os: macos-14
             target: aarch64-apple-darwin
-            targets: aarch64-apple-darwin x86_64-apple-darwin
-            artifact: skirr-macos-universal
+            artifact: skirr-macos-arm64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: skirr-linux-amd64
@@ -75,12 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = "MacOS" ]; then
-            cargo build --release -p skirr-cli --target aarch64-apple-darwin
-            cargo build --release -p skirr-cli --target x86_64-apple-darwin
-          else
-            cargo build --release -p skirr-cli --target ${{ matrix.target }}
-          fi
+          cargo build --release -p skirr-cli --target ${{ matrix.target }}
 
       - name: Package (Windows portable .zip)
         if: runner.os == 'Windows'
@@ -96,19 +90,15 @@ jobs:
         shell: pwsh
         run: ./target/${{ matrix.target }}/release/skirr.exe --help
 
-      - name: Package (macOS universal .app -> .dmg)
+      - name: Package (macOS .app -> .dmg)
         if: runner.os == 'MacOS'
+        shell: bash
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
           APP="Skirr.app"
           mkdir -p "dist/$APP/Contents/MacOS" "dist/dmg-staging"
-          # Merge both architecture slices into one universal binary.
-          lipo -create \
-            "target/aarch64-apple-darwin/release/skirr" \
-            "target/x86_64-apple-darwin/release/skirr" \
-            -output "dist/$APP/Contents/MacOS/skirr"
-          lipo -info "dist/$APP/Contents/MacOS/skirr" | grep -q "aarch64 x86_64"
+          cp "target/${{ matrix.target }}/release/skirr" "dist/$APP/Contents/MacOS/skirr"
           cat > "dist/$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -122,14 +112,12 @@ jobs:
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
-          # Unsigned builds must be ad-hoc signed or arm64 macOS refuses to run.
           codesign --force --deep -s - "dist/$APP"
-          # Smoke test before shipping the bundle.
           "./dist/$APP/Contents/MacOS/skirr" --help > /dev/null
           cp -R "dist/$APP" dist/dmg-staging/
           ln -s /Applications dist/dmg-staging/Applications
           cat > dist/dmg-staging/HOW\ TO\ RUN.txt <<NOTE
-          Skirr v${VERSION} (macOS, universal: Apple Silicon + Intel)
+          Skirr v${VERSION} (macOS, Apple Silicon)
 
           FIRST LAUNCH - ONE-TIME STEP
           ----------------------------
