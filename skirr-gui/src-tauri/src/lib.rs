@@ -495,7 +495,7 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
     }
 
     // Build warning lines from failed/warning rule evaluations.
-    let warnings: Vec<WarningLine> = diagnosis
+    let mut warnings: Vec<WarningLine> = diagnosis
         .rules_applied
         .iter()
         .filter(|r| {
@@ -560,43 +560,54 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
             .unwrap_or_default();
 
         for dev in &tier1 {
-            if let Some(pn) = dev.port_number {
-                // Compute worst-case chain metrics for this port.
-                let mut worst_hops: u8 = 0;
-                let mut worst_hubs: u8 = 0;
-                let mut worst_tiers: u8 = 0;
-
-                // Recursive function to walk all descendants and find worst metrics.
-                fn walk_descendants(
+            if dev.port_number.is_some() {
+                // Compute worst-case hops/tiers and count ALL external hubs + total devices.
+                fn walk_subtree(
                     dev_id: uuid::Uuid,
                     by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
                     by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
-                    worst: &mut (u8, u8, u8),
+                    worst: &mut (u8, u8),
+                    total_hubs: &mut u32,
+                    total_devices: &mut u32,
                 ) {
                     if let Some(kids) = by_parent.get(&Some(dev_id)) {
                         for kid in kids {
-                            let (h, eh, t) = chain_metrics_for(kid.id, by_id);
-                            if h > worst.0 {
-                                worst.0 = h;
+                            // Count every child as a device.
+                            *total_devices += 1;
+                            // Count external hubs anywhere in the subtree.
+                            if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub)
+                                && !kid.is_internal
+                            {
+                                *total_hubs += 1;
                             }
-                            if eh > worst.1 {
-                                worst.1 = eh;
-                            }
-                            if t > worst.2 {
-                                worst.2 = t;
-                            }
-                            walk_descendants(kid.id, by_parent, by_id, worst);
+                            // Worst-case hops/tiers (path depth).
+                            let (h, _eh, t) = chain_metrics_for(kid.id, by_id);
+                            worst.0 = worst.0.max(h);
+                            worst.1 = worst.1.max(t);
+                            walk_subtree(kid.id, by_parent, by_id, worst, total_hubs, total_devices);
                         }
                     }
                 }
 
-                let mut worst = (0u8, 0u8, 0u8);
-                walk_descendants(dev.id, &by_parent, &by_id, &mut worst);
-                // Include the port device itself.
-                let (dh, deh, dt) = chain_metrics_for(dev.id, &by_id);
+                let mut worst = (0u8, 0u8);
+                let mut total_hubs: u32 = 0;
+                let mut total_devices: u32 = 0;
+                walk_subtree(
+                    dev.id,
+                    &by_parent,
+                    &by_id,
+                    &mut worst,
+                    &mut total_hubs,
+                    &mut total_devices,
+                );
+                // Include the port device itself in metrics.
+                let (dh, _deh, dt) = chain_metrics_for(dev.id, &by_id);
                 worst.0 = worst.0.max(dh);
-                worst.1 = worst.1.max(deh);
-                worst.2 = worst.2.max(dt);
+                worst.1 = worst.1.max(dt);
+                if (dev.is_hub || dev.device_class == skirr_core::UsbClass::Hub) && !dev.is_internal
+                {
+                    total_hubs += 1;
+                }
 
                 let mut node = build_tree_node(
                     dev,
@@ -606,8 +617,12 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
                     &bold_ids,
                 );
                 node.meta = Some(format!(
-                    "(Hops {}, Hubs {}, Tiers {})",
-                    worst.0, worst.1, worst.2
+                    "Hops {} · Hubs {} · Tiers {} · {} device{}",
+                    worst.0,
+                    total_hubs,
+                    worst.1,
+                    total_devices,
+                    if total_devices == 1 { "" } else { "s" }
                 ));
                 port_nodes.push(node);
             }
@@ -1134,7 +1149,7 @@ fn run_monitor_loop(handle: &AppHandle) -> BackendResult<()> {
     while handle
         .state::<AppState>()
         .monitor_running
-        .load(AtomicAtomicOrdering::SeqCst)
+        .load(AtomicOrdering::SeqCst)
     {
         match session.poll_event(Duration::from_millis(250))? {
             Some(event) => {

@@ -193,7 +193,7 @@ function renderNode(node, prefix, isLast) {
     label += ` <span class="ids">${node.vid.toString(16).padStart(4, "0")}:${node.pid.toString(16).padStart(4, "0")}</span>`;
   }
   if (node.hub_ports != null) {
-    label += ` <span class="hubmark">[HUB ${node.hub_ports}p]</span>`;
+    label += ` <span class="hubmark">${node.hub_ports}-port hub</span>`;
   } else if (node.label !== "n/a" && node.label !== "HOST" && !node.label.startsWith("Port ")) {
     // Non-hub, non-empty device — show nothing special
   }
