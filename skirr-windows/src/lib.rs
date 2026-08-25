@@ -41,14 +41,19 @@ mod tests {
     fn unsupported_methods_error_cleanly() {
         let b = create_backend();
         let topo = b.get_topology();
-        assert!(topo.is_err());
         let speeds = b.get_speeds(uuid::Uuid::new_v4());
-        assert!(speeds.is_err());
 
-        // Off-Windows hosts must get Unsupported rather than panics; on
-        // Windows the enumeration path is allowed to fail in CI sandboxes.
-        if !cfg!(windows) {
+        if cfg!(windows) {
+            // On real Windows the topology call may succeed (CI runners
+            // have SetupAPI access) or fail — both are acceptable.
+            let _ = topo;
+            // Speeds may also succeed on real Windows.
+            let _ = speeds;
+        } else {
+            // Off-Windows must get Unsupported rather than panics.
+            assert!(topo.is_err());
             assert!(topo.unwrap_err().to_string().contains("Windows"));
+            assert!(speeds.is_err());
             assert!(b.platform_info().is_err());
             assert!(b.enumerate_devices().is_err());
         }
