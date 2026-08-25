@@ -428,25 +428,27 @@ CI must build all four artifacts on every release tag.
 - **Notes**: Parser keys handle the `_key` suffix convention observed on modern macOS plus bare names for older builds. Route-string depth: host "0"=0, "3"=1, "3.1"/"3/1"=2. 10 new tests (5 parser incl. real system_profiler fixture captured on this machine, 3 bandwidth, 2 backend wiring); workspace now 167 tests green, GUI crate 4 green. Cross-target checks pass (windows-msvc, linux-gnu).
 
 ### 10.2 Power Analysis
-- [ ] USB-PD negotiation details
-- [ ] CC state detection
-- [ ] Cable capability (E-marker)
-- [ ] Power role (source/sink/DRP)
-- **Progress: 0%**
+- [x] USB-PD negotiation details *(new `skirr_core::typec_power` module: `TypeCPortStatus` (power_role/data_role/pd_revision/port_type/orientation/vconn/partner_attached/emarker) + `pd_active()`; Linux collector `collect_typec_ports()` walks `/sys/class/typec` with attr fallback chain port→partner→plug→plug/identity; macOS: probed ioreg AppleHPM services on dev host — they expose only I2C bus internals (Address/DeviceID/mode registers), NO public PD contract/CC keys → honest empty result, documented; Windows graceful unsupported)*
+- [x] CC state detection *(Linux `orientation` attr → ConnectorOrientation::Normal/Flipped, `vconn_source` attr parsed; macOS/Windows not exposed — gap documented in code comments)*
+- [x] Cable capability (E-marker) *(`CableEMarker` type built from plug identity attrs (VID:PID, current_rating_a like "[3A]", plug_mode); rendered in CLI USB-C POWER section + HTML table "Cable" column)*
+- [x] Power role (source/sink/DRP) *(reuses model's `PowerRole`/`DataRole`; Linux bracket-convention active-value parsing `[source] sink`; 4 unit tests incl. full-port fixture and minimal-degrade case; `SystemTopology.type_c_ports` field (`#[serde(default)]`) wired into all constructor sites)*
+- **Progress: 100%**
+- **Notes**: Presentation lives in CLI `render_tree` "USB-C POWER" section + HTML `<section id="usb-c-power">`, both conditional on non-empty ports (macOS dev host correctly shows nothing rather than fabricating). GUI already surfaces per-device PD contract in details panel from Phase 7; port-level section deferred there until a platform exposes it.
 
 ### 10.3 Bandwidth Analysis
-- [ ] Calculate available vs used bandwidth
-- [ ] Display bandwidth requirements
-- [ ] Hub bottleneck identification
-- [ ] Multi-display bandwidth planning
-- **Progress: 0%**
+- [x] Calculate available vs used bandwidth *(done in 10.1: `analyze_bandwidth` per-hub uplink vs downstream negotiated-speed sum, ≥70% MAJOR / ≥95% CRITICAL)*
+- [x] Display bandwidth requirements *(new `estimate_display_mbps(w,h,hz,bpp)` = w·h·hz·bpp ×1.25 blanking+8b10b overhead; HDR panels assumed 30bpp else 24; hand-math test: 4K60≈14.9 Gb/s, 1080p60≈3.7 Gb/s)*
+- [x] Hub bottleneck identification *(done in 10.1; display requirements now fold into the same CLI BANDWIDTH/DISPLAY BANDWIDTH + HTML sections)*
+- [x] Multi-display bandwidth planning *(`MultiDisplayPlan` + `plan_display_bandwidth(topo)`: per-display required Mb/s vs nearest upstream hub's uplink capacity, flags EXCEEDS HUB UPLINK; display→USB device resolution prefers `usb_path` tip, falls back to platform_id match; combined total row in CLI + HTML)*
+- **Progress: 100%**
 
 ### 10.4 Advanced Event Correlation
-- [ ] Root cause analysis for re-enumerations
-- [ ] Pattern detection (periodic drops)
-- [ ] Correlation with display events
-- [ ] Export timeline for support
-- **Progress: 0%**
+- [x] Root cause analysis for re-enumerations *(new `attribute_root_causes(topo, events)`: walks parent chain of each re-enum/disconnect/speed-change, first ancestor hub with its own disruptive event within ±3s claims the cause ("upstream hub X") else device/cable-local; `RootCauseAttribution` serializable)*
+- [x] Pattern detection (periodic drops) *(new `detect_periodic_drops(events, max_cv=0.25)`: per-device sorted disconnect intervals, needs ≥3 intervals, coefficient-of-variation gate for clock-like regularity — the failing-cable/power-save signature; `PeriodicPattern{interval_mean_secs, interval_stddev_secs, samples}`)*
+- [x] Correlation with display events *(new `correlate_display_events(events, window_secs=5)`: greedy nearest-match pairs USB connect/disconnect/hub events ↔ DisplayConnected/Disconnected/ModeChanged, each USB event consumed once, sorted by display timestamp, delta_ms recorded)*
+- [x] Export timeline for support *(serializable `TimelineReport{generated, duration_secs, summary, entries, periodic_patterns, root_causes, display_correlations}` + `to_pretty_json()`; CLI `skirr monitor --timeline <path>` collects correlated entries live then runs post-hoc analyses at session end and writes the JSON — LIVE-VERIFIED on dev host: file contains all 7 sections)*
+- **Progress: 100%**
+- **Notes**: 4 new correlate tests (upstream attribution, periodic vs irregular drops, display pairing windows, report serialization). Workspace now 177 tests green; clippy `-D warnings` clean (fixed one `map_or`→`is_some_and` lint in skirr-linux); cross-target checks pass.
 
 ---
 
@@ -489,10 +491,10 @@ CI must build all four artifacts on every release tag.
 | 7 | USB-C & Display Diagnostics | 100% | [x] Completed (🟡 native Type-C/display paths need hardware sweep) |
 | 8 | Live Monitoring & Reports | 95% | [~] In progress (8.1–8.2 done; 8.3 done minus zip bundle) |
 | 9 | Tauri GUI | 100% | [x] Complete (shell + all views + polish; TB/USB4 standalone panel deferred to Phase 10/11) |
-| 10 | Advanced Features (P2) | 25% | [~] In progress (10.1 done — TB/USB4 topology + bandwidth, live-verified) |
+| 10 | Advanced Features (P2) | 100% | [x] Completed (10.1 live-verified TB/USB4 + bandwidth; 10.2 Type-C power (Linux-only data, macOS/Windows gaps documented); 10.3 display planning; 10.4 root-cause/periodicity/display correlation + `--timeline` export) |
 | 11 | Hardware Details (P3) | 0% | [ ] Not started |
 
-**Total Project Progress: 58%** *(phase-weighted: Phases 0–7 complete; Windows + macOS + Linux backends, CLI, release pipeline done — GUI next)*
+**Total Project Progress: 62%** *(phase-weighted: Phases 0–4, 6–7, 9–10 complete; 5 & 8 nearly done; Phase 11 P3 next)*
 
 ### CI Status (owner decision, 2026-08-24)
 
@@ -527,16 +529,17 @@ Rules while paused:
 
 ## Next Task for Agent
 
-**Current**: Phase 10.2 - Power Analysis
-**Action**: USB-PD negotiation details, CC state detection, cable E-marker capability, power role:
-- Extend existing PowerInfo plumbing (model.rs `PowerInfo`/`PowerDataObject`, usb_c.rs billboard path) with whatever the OS actually exposes:
-  - macOS: IORegistry keys on AppleTypeC/AppleHPM services (port data: PD contract, source caps) — probe ioreg output on dev host first; absent keys → honest None
-  - Linux: /sys/class/typec/portN (power_role, data_role, pd_revision) + partner dirs; plug/contract attrs where present
-  - Windows: graceful unsupported (no public API without vendor SDK)
-- CC state + E-marker: only where OS exposes (Linux typec `orientation`, `plug_mode`); otherwise document gap
-- Surface in CLI device table / details, HTML report power section, GUI details panel power block
-**Verify locally**: clippy/fmt/test workspace-wide; live check on dev host (internal hubs may expose some typec services); cross-target checks
-**Reference**: skirr-core/src/model.rs (PowerInfo), skirr-macos/src/usb_c.rs, skirr-linux/src/usb_c.rs; planner 10.2
+**Current**: Phase 11.1 - USB-PD Deep Details
+**Action**: PDO/APDO parsing, voltage/current negotiation history, cable wattage limits, PPS support detection:
+- Extend `skirr_core::typec_power` (10.2) and model's `PowerInfo`/`PowerDataObject` with whatever the OS actually exposes:
+  - Linux: `/sys/class/typec/portN` partner dirs + `/sys/class/power_supply` (usb_device/usb_type attrs where present); `pd_revision` already parsed in 10.2 — add source-cap/PDO listing if sysfs exposes it; otherwise document gap honestly
+  - macOS: ioreg AppleHPM probing in 10.2 found NO public PD contract keys — do not fabricate; re-check only if new keys surface on hardware sweep
+  - Windows: graceful unsupported without vendor SDK
+- Cable wattage limits: derive from `CableEMarker.current_rating_a` × VBUS rail (5V/20V per PD rev) when E-marker present
+- PPS: only where pd_revision ≥ 3.0 AND OS exposes APDO data; else None
+- Surface in CLI USB-C POWER section (extend, don't duplicate), HTML usb-c-power table columns, GUI details panel power block
+**Verify locally**: fmt/clippy/test workspace-wide; cross-target checks; live check on dev host (expect honest-empty on macOS)
+**Reference**: skirr-core/src/typec_power.rs, skirr-core/src/model.rs (PowerInfo), skirr-linux/src/thunderbolt.rs::collect_typec_ports; planner 11.1
 ---
-*Last updated: 2026-08-25 | Phase 10.1 done: TB/USB4 router topology collected on macOS+Linux (verified LIVE on dev host's 3 USB4 buses), bandwidth analysis engine + CLI/HTML/GUI rendering. Windows TB stays empty by design.*
+*Last updated: 2026-08-25 | Phase 10 complete: TB/USB4 topology (live-verified), bandwidth + multi-display planning, Type-C power/E-marker collection (Linux data path real; macOS AppleHPM gap documented), root-cause + periodic-drop analysis, display-event correlation, `skirr monitor --timeline` JSON export (live-verified). Workspace 177 tests green. Next: Phase 11 P3 hardware details.*
 ---

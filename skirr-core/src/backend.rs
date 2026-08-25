@@ -235,6 +235,7 @@ pub(crate) mod stub {
                 hubs: devices.iter().filter(|d| d.is_hub).cloned().collect(),
                 displays: Vec::new(),
                 thunderbolt_routers: Vec::new(),
+                type_c_ports: Vec::new(),
                 events: Vec::new(),
                 platform_info: self.platform_info_inner(),
             })

@@ -1,0 +1,215 @@
+{
+  "schema_version": "1.0",
+  "tool": {
+    "name": "skirr",
+    "version": "0.1.0"
+  },
+  "generated": "2026-08-24T22:50:23.850587Z",
+  "profile_name": "Skirr Standard Profile",
+  "platform": {
+    "os": "macOS",
+    "os_version": "26.5.2",
+    "kernel_version": "25.5.0",
+    "architecture": "aarch64",
+    "hostname": "MacBook-Pro-som-tillhor-Linus.local",
+    "username": "linusklang",
+    "is_admin": false,
+    "is_virtual_machine": false,
+    "boot_time": null
+  },
+  "topology": {
+    "timestamp": "2026-08-24T22:50:23.768555Z",
+    "host_controllers": [],
+    "root_hubs": [],
+    "devices": [],
+    "hubs": [],
+    "displays": [],
+    "thunderbolt_routers": [
+      {
+        "id": "0x05AC9DB544B7AC60",
+        "name": "MacBook Pro",
+        "vendor_name": "Apple Inc.",
+        "route_string": "0",
+        "domain_uuid": "AD37DF26-7BFB-48CC-A507-E40370342174",
+        "generation": null,
+        "is_usb4": true,
+        "security_level": null,
+        "nvm_version": null,
+        "depth": 0,
+        "status": null,
+        "receptacles": [
+          {
+            "id": "1",
+            "status": "receptacle_no_devices_connected",
+            "current_speed": "Up to 40 Gb/s",
+            "link_status": "0x100"
+          }
+        ]
+      },
+      {
+        "id": "0x05AC9DB544B7AC61",
+        "name": "MacBook Pro",
+        "vendor_name": "Apple Inc.",
+        "route_string": "0",
+        "domain_uuid": "D318E460-BC90-49F2-B6EE-9B76C1854E2D",
+        "generation": null,
+        "is_usb4": true,
+        "security_level": null,
+        "nvm_version": null,
+        "depth": 0,
+        "status": null,
+        "receptacles": [
+          {
+            "id": "1",
+            "status": "receptacle_no_devices_connected",
+            "current_speed": "Up to 40 Gb/s",
+            "link_status": "0x100"
+          }
+        ]
+      },
+      {
+        "id": "0x05AC9DB544B7AC62",
+        "name": "MacBook Pro",
+        "vendor_name": "Apple Inc.",
+        "route_string": "0",
+        "domain_uuid": "5693EDBE-82A0-4A7D-ADD4-E861D14CBE36",
+        "generation": null,
+        "is_usb4": true,
+        "security_level": null,
+        "nvm_version": null,
+        "depth": 0,
+        "status": null,
+        "receptacles": [
+          {
+            "id": "1",
+            "status": "receptacle_no_devices_connected",
+            "current_speed": "Up to 40 Gb/s",
+            "link_status": "0x100"
+          }
+        ]
+      }
+    ],
+    "type_c_ports": [],
+    "events": [],
+    "platform_info": {
+      "os": "macOS",
+      "os_version": "26.5.2",
+      "kernel_version": "25.5.0",
+      "architecture": "aarch64",
+      "hostname": "MacBook-Pro-som-tillhor-Linus.local",
+      "username": "linusklang",
+      "is_admin": false,
+      "is_virtual_machine": false,
+      "boot_time": null
+    }
+  },
+  "diagnosis": {
+    "timestamp": "2026-08-24T22:50:23.850579Z",
+    "profile_version": "1.0",
+    "overall_verdict": "Pass",
+    "facts": [
+      {
+        "id": "platform.os",
+        "category": "Platform",
+        "description": "Host operating system family",
+        "value": {
+          "arch": "aarch64",
+          "os": "macOS",
+          "version": "26.5.2"
+        },
+        "source": "skirr-core",
+        "confidence": 100
+      },
+      {
+        "id": "devices.count",
+        "category": "Device",
+        "description": "Present USB device counts",
+        "value": {
+          "hubs_external": 0,
+          "hubs_total": 0,
+          "total": 0
+        },
+        "source": "skirr-core",
+        "confidence": 100
+      },
+      {
+        "id": "chain.deepest",
+        "category": "Topology",
+        "description": "Deepest chain metrics (recomputed from parent links)",
+        "value": {
+          "external_hubs_on_worst_path": 0,
+          "hops": 0,
+          "tiers": 0
+        },
+        "source": "skirr-core",
+        "confidence": 90
+      },
+      {
+        "id": "controllers.count",
+        "category": "HostController",
+        "description": "USB host controllers present",
+        "value": 0,
+        "source": "skirr-core",
+        "confidence": 100
+      },
+      {
+        "id": "displays.count",
+        "category": "Display",
+        "description": "Displays reported in snapshot",
+        "value": 0,
+        "source": "skirr-core",
+        "confidence": 80
+      }
+    ],
+    "rules_applied": [
+      {
+        "rule_id": "max_hops",
+        "rule_description": "Deepest chain hop count within platform limit",
+        "rule_category": "Topology",
+        "expected": 6,
+        "actual": 0,
+        "verdict": "Pass",
+        "explanation": "worst path has 0 (limit 6); verdict PASS"
+      },
+      {
+        "rule_id": "max_tiers",
+        "rule_description": "Deepest chain tier count within platform limit",
+        "rule_category": "Topology",
+        "expected": 6,
+        "actual": 0,
+        "verdict": "Pass",
+        "explanation": "worst path has 0 (limit 6); verdict PASS"
+      },
+      {
+        "rule_id": "max_hubs",
+        "rule_description": "External hubs on worst path within platform limit",
+        "rule_category": "Topology",
+        "expected": 4,
+        "actual": 0,
+        "verdict": "Pass",
+        "explanation": "worst path has 0 (limit 4); verdict PASS"
+      }
+    ],
+    "bottlenecks": [],
+    "topology_issues": [],
+    "display_issues": [],
+    "usb_c_issues": [],
+    "power_issues": [],
+    "event_summary": {
+      "total_events": 0,
+      "connects": 0,
+      "disconnects": 0,
+      "re_enumerations": 0,
+      "speed_changes": 0,
+      "power_changes": 0,
+      "display_changes": 0,
+      "errors": 0,
+      "warnings": 0,
+      "monitoring_duration_secs": 0,
+      "stability_score": 0
+    },
+    "recommendations": [
+      "No stability risks detected under this profile."
+    ]
+  }
+}

@@ -99,14 +99,33 @@ jobs:
           cat > dist/dmg-staging/HOW\ TO\ RUN.txt <<NOTE
           Skirr ${GITHUB_REF_NAME} (macOS, universal: Apple Silicon + Intel)
 
-          1. Drag Skirr.app into the Applications folder.
-          2. First launch only, because the app is not notarized yet:
-             double-click Skirr.app, then open System Settings >
-             Privacy & Security and click "Open Anyway" next to the Skirr
-             message. Or clear the download quarantine flag once:
-                xattr -dr com.apple.quarantine /Applications/Skirr.app
-          3. Or run the CLI directly from Terminal:
-                /Applications/Skirr.app/Contents/MacOS/skirr --help
+          FIRST LAUNCH - ONE-TIME STEP
+          ----------------------------
+          The app is not notarized yet ("until Apple approves the app"),
+          so macOS blocks the very first start of a downloaded copy.
+
+          Copy and paste this line into Terminal and press Enter to be able
+          to run the app:
+
+              xattr -dr com.apple.quarantine /Applications/Skirr.app
+
+          This un-quarantines the app. It is only necessary once; afterwards
+          Skirr opens normally every time.
+
+          ALTERNATIVE (no Terminal)
+          -------------------------
+          Double-click Skirr.app once. When macOS says it cannot verify the
+          app, go to System Settings > Privacy & Security and click
+          "Open Anyway" next to the Skirr message.
+
+          INSTALLING
+          ----------
+          Drag Skirr.app into the Applications folder first (the shortcut
+          above points there).
+
+          ADVANCED: CLI
+          -------------
+          /Applications/Skirr.app/Contents/MacOS/skirr --help
           NOTE
           hdiutil create -volname "Skirr ${VERSION}" -srcfolder dist/dmg-staging \
             -format UDZO -ov "${{ matrix.artifact }}.dmg"

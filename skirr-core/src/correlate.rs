@@ -246,6 +246,264 @@ pub fn stability_score(summary: &EventSummary) -> u8 {
     100u8.saturating_sub(penalties.min(100.0) as u8)
 }
 
+// ---------------------------------------------------------------------------
+// Post-hoc session analysis (Phase 10.4): root causes, periodicity, display
+// correlation, and a support-exportable timeline.
+// ---------------------------------------------------------------------------
+
+/// Where a disruption most plausibly originated.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RootCauseAttribution {
+    pub affected_device: Option<uuid::Uuid>,
+    /// "upstream hub X dropped its children" vs "device-local trouble".
+    pub is_upstream: bool,
+    pub upstream_hub_id: Option<uuid::Uuid>,
+    pub description: String,
+}
+
+const ROOT_CAUSE_WINDOW_SECS: i64 = 3;
+
+/// Attribute each re-enumeration/disconnect to either an upstream hub event
+/// within ±3 s (cable/port/power trouble above the device) or device-local.
+pub fn attribute_root_causes(
+    topo: &SystemTopology,
+    events: &[DiagnosticEvent],
+) -> Vec<RootCauseAttribution> {
+    let by_id: HashMap<uuid::Uuid, &crate::UsbDevice> =
+        topo.devices.iter().map(|d| (d.id, d)).collect();
+    let mut out = Vec::new();
+
+    for event in events.iter().filter(|e| {
+        matches!(
+            e.event_type,
+            EventType::DeviceReEnumerated | EventType::DeviceDisconnected | EventType::SpeedChanged
+        )
+    }) {
+        let Some(dev_id) = event.device_id else {
+            continue;
+        };
+        let ts = event.timestamp.timestamp();
+
+        // Walk the parent chain; first ancestor hub with its own disruptive
+        // event inside the window claims the cause (nearest wins).
+        let mut cursor = by_id.get(&dev_id).and_then(|d| d.parent_id);
+        let mut culprit = None;
+        while let Some(pid) = cursor {
+            let upstream_hit = events.iter().any(|e| {
+                e.device_id == Some(pid)
+                    && matches!(
+                        e.event_type,
+                        EventType::DeviceDisconnected
+                            | EventType::HubDisconnected
+                            | EventType::DeviceReEnumerated
+                    )
+                    && (e.timestamp.timestamp() - ts).abs() <= ROOT_CAUSE_WINDOW_SECS
+            });
+            if upstream_hit {
+                culprit = Some(pid);
+                break;
+            }
+            cursor = by_id.get(&pid).and_then(|d| d.parent_id);
+        }
+
+        out.push(if let Some(hub_id) = culprit {
+            RootCauseAttribution {
+                affected_device: Some(dev_id),
+                is_upstream: true,
+                upstream_hub_id: Some(hub_id),
+                description: format!(
+                    "{:?} of {} attributed to upstream hub {} (event within {ROOT_CAUSE_WINDOW_SECS}s)",
+                    event.event_type, dev_id, hub_id
+                ),
+            }
+        } else {
+            RootCauseAttribution {
+                affected_device: Some(dev_id),
+                is_upstream: false,
+                upstream_hub_id: None,
+                description: format!("{:?} of {dev_id}: no upstream event — likely device/cable-local", event.event_type),
+            }
+        });
+    }
+    out
+}
+
+/// A device dropping at regular intervals — the classic failing-cable or
+/// power-save-timer signature.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PeriodicPattern {
+    pub device_id: uuid::Uuid,
+    pub interval_mean_secs: f64,
+    pub interval_stddev_secs: f64,
+    pub samples: usize,
+}
+
+/// Detect periodic disconnects per device. `max_cv` caps the coefficient of
+/// variation (stddev/mean); 0.25 keeps only clock-like regularity.
+pub fn detect_periodic_drops(events: &[DiagnosticEvent], max_cv: f64) -> Vec<PeriodicPattern> {
+    let mut drops_by_device: HashMap<uuid::Uuid, Vec<i64>> = HashMap::new();
+    for e in events
+        .iter()
+        .filter(|e| e.event_type == EventType::DeviceDisconnected)
+    {
+        if let Some(id) = e.device_id {
+            drops_by_device
+                .entry(id)
+                .or_default()
+                .push(e.timestamp.timestamp());
+        }
+    }
+
+    let mut patterns = Vec::new();
+    for (device_id, mut times) in drops_by_device {
+        times.sort_unstable();
+        let intervals: Vec<f64> = times
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as f64)
+            .filter(|d| *d > 0.0)
+            .collect();
+        if intervals.len() < 3 {
+            continue; // need ≥4 drops before "periodic" means anything
+        }
+        let mean = intervals.iter().sum::<f64>() / intervals.len() as f64;
+        if mean <= 0.0 {
+            continue;
+        }
+        let variance =
+            intervals.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / intervals.len() as f64;
+        let stddev = variance.sqrt();
+        if stddev / mean <= max_cv {
+            patterns.push(PeriodicPattern {
+                device_id,
+                interval_mean_secs: mean,
+                interval_stddev_secs: stddev,
+                samples: intervals.len() + 1,
+            });
+        }
+    }
+    patterns
+}
+
+/// A USB transition and a display transition that happened close together —
+/// usually one dock/TB chain carrying both.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DisplayCorrelation {
+    pub usb_timestamp: chrono::DateTime<chrono::Utc>,
+    pub usb_event_type: EventType,
+    pub display_timestamp: chrono::DateTime<chrono::Utc>,
+    pub display_event_type: EventType,
+    pub delta_ms: i64,
+    pub description: String,
+}
+
+/// Pair USB connect/disconnect events with display events within `window`.
+/// Greedy nearest-match, each USB event consumed once.
+pub fn correlate_display_events(
+    events: &[DiagnosticEvent],
+    window_secs: i64,
+) -> Vec<DisplayCorrelation> {
+    let usb_kinds = [
+        EventType::DeviceDisconnected,
+        EventType::HubDisconnected,
+        EventType::DeviceConnected,
+        EventType::HubConnected,
+    ];
+    let display_kinds = [
+        EventType::DisplayDisconnected,
+        EventType::DisplayConnected,
+        EventType::DisplayModeChanged,
+    ];
+
+    let usb_events: Vec<&DiagnosticEvent> = events
+        .iter()
+        .filter(|e| usb_kinds.contains(&e.event_type))
+        .collect();
+    let mut used = vec![false; usb_events.len()];
+    let mut out = Vec::new();
+
+    for display_event in events
+        .iter()
+        .filter(|e| display_kinds.contains(&e.event_type))
+    {
+        let dt = display_event.timestamp.timestamp();
+        let best = usb_events
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| !used[*i] && (e.timestamp.timestamp() - dt).abs() <= window_secs)
+            .min_by_key(|(_, e)| (e.timestamp.timestamp() - dt).abs());
+        if let Some((i, usb)) = best {
+            used[i] = true;
+            let delta_ms = (usb.timestamp.timestamp_millis()
+                - display_event.timestamp.timestamp_millis())
+            .abs();
+            out.push(DisplayCorrelation {
+                usb_timestamp: usb.timestamp,
+                usb_event_type: usb.event_type,
+                display_timestamp: display_event.timestamp,
+                display_event_type: display_event.event_type,
+                delta_ms,
+                description: format!(
+                    "{:?} on USB coincided with {:?} on displays ({delta_ms} ms apart) — shared chain?",
+                    usb.event_type, display_event.event_type
+                ),
+            });
+        }
+    }
+    out.sort_by_key(|c| c.display_timestamp);
+    out
+}
+
+/// One support-facing timeline line.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TimelineEntry {
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub kind: String,
+    pub description: String,
+}
+
+impl TimelineEntry {
+    pub fn from_single(event: &DiagnosticEvent) -> Self {
+        TimelineEntry {
+            timestamp: event.timestamp,
+            kind: format!("{:?}", event.event_type),
+            description: event.details.clone(),
+        }
+    }
+
+    pub fn from_hub_removal(
+        hub_event: &DiagnosticEvent,
+        child_disconnects: usize,
+        max_depth: u8,
+    ) -> Self {
+        TimelineEntry {
+            timestamp: hub_event.timestamp,
+            kind: "HubRemoval".into(),
+            description: format!(
+                "{} ({} device(s), depth {max_depth})",
+                hub_event.details, child_disconnects
+            ),
+        }
+    }
+}
+
+/// Everything worth handing to support after a monitoring session.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct TimelineReport {
+    pub generated: chrono::DateTime<chrono::Utc>,
+    pub duration_secs: u64,
+    pub summary: EventSummary,
+    pub entries: Vec<TimelineEntry>,
+    pub periodic_patterns: Vec<PeriodicPattern>,
+    pub root_causes: Vec<RootCauseAttribution>,
+    pub display_correlations: Vec<DisplayCorrelation>,
+}
+
+impl TimelineReport {
+    pub fn to_pretty_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +533,7 @@ mod tests {
             hubs: Vec::new(),
             displays: Vec::new(),
             thunderbolt_routers: Vec::new(),
+            type_c_ports: Vec::new(),
             events: Vec::new(),
             platform_info: empty_platform_info(),
         };
@@ -305,6 +564,100 @@ mod tests {
             details: "test".into(),
             severity: EventSeverity::Info,
             metadata: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn root_causes_point_at_upstream_hub_when_it_dropped() {
+        let topo = topo_with(&[("dock", None), ("ssd", Some("dock"))]);
+        let dock = &topo.devices[0];
+        let ssd = &topo.devices[1];
+
+        let events = vec![
+            event(EventType::DeviceDisconnected, Some(dock.id), 100),
+            event(EventType::DeviceDisconnected, Some(ssd.id), 101),
+            event(EventType::DeviceReEnumerated, Some(dock.id), 104),
+            event(EventType::DeviceReEnumerated, Some(ssd.id), 105),
+        ];
+        let causes = attribute_root_causes(&topo, &events);
+        assert_eq!(causes.len(), 4);
+        // The SSD's re-enum is attributed to the dock (1s after dock's).
+        let ssd_cause = causes
+            .iter()
+            .find(|c| c.affected_device == Some(ssd.id) && c.is_upstream)
+            .expect("ssd attributed upstream");
+        assert_eq!(ssd_cause.upstream_hub_id, Some(dock.id));
+        // But the dock's own re-enum has no ancestor → device-local.
+        let dock_local = causes.iter().find(|c| !c.is_upstream).expect("local cause");
+        assert_eq!(dock_local.affected_device, Some(dock.id));
+    }
+
+    #[test]
+    fn periodic_drops_detected_only_for_regular_intervals() {
+        let topo = topo_with(&[("flapper", None)]);
+        let dev = topo.devices[0].id;
+        // Drops every 45s ±0 — clock-like.
+        let regular: Vec<DiagnosticEvent> = (0..5)
+            .map(|i| event(EventType::DeviceDisconnected, Some(dev), 1000 + i * 45))
+            .collect();
+        let patterns = detect_periodic_drops(&regular, 0.25);
+        assert_eq!(patterns.len(), 1);
+        assert_eq!(patterns[0].device_id, dev);
+        assert!((patterns[0].interval_mean_secs - 45.0).abs() < 0.001);
+        assert!(patterns[0].interval_stddev_secs < 1.0);
+
+        // Irregular drops don't qualify.
+        let irregular = vec![
+            event(EventType::DeviceDisconnected, Some(dev), 100),
+            event(EventType::DeviceDisconnected, Some(dev), 200),
+            event(EventType::DeviceDisconnected, Some(dev), 500),
+            event(EventType::DeviceDisconnected, Some(dev), 900),
+        ];
+        assert!(detect_periodic_drops(&irregular, 0.25).is_empty());
+    }
+
+    #[test]
+    fn display_events_pair_with_nearby_usb_events() {
+        let events = vec![
+            event(EventType::HubDisconnected, None, 100),
+            event(EventType::DisplayDisconnected, None, 102), // 2s later
+            event(EventType::DisplayConnected, None, 600),
+        ];
+        let pairs = correlate_display_events(&events, 5);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].usb_event_type, EventType::HubDisconnected);
+        assert_eq!(pairs[0].display_event_type, EventType::DisplayDisconnected);
+        assert_eq!(pairs[0].delta_ms, 2000);
+
+        // Outside the window nothing pairs.
+        assert!(correlate_display_events(&events, 1).is_empty());
+    }
+
+    #[test]
+    fn timeline_report_serializes_with_all_sections() {
+        let report = TimelineReport {
+            generated: chrono::Utc::now(),
+            duration_secs: 60,
+            summary: EventSummary::default(),
+            entries: vec![TimelineEntry {
+                timestamp: chrono::Utc::now(),
+                kind: "DeviceConnected".into(),
+                description: "FlashDrive".into(),
+            }],
+            periodic_patterns: Vec::new(),
+            root_causes: Vec::new(),
+            display_correlations: Vec::new(),
+        };
+        let json = report.to_pretty_json().expect("serializes");
+        for key in [
+            "\"generated\"",
+            "\"summary\"",
+            "\"entries\"",
+            "\"periodic_patterns\"",
+            "\"root_causes\"",
+            "\"display_correlations\"",
+        ] {
+            assert!(json.contains(key), "missing {key}");
         }
     }
 

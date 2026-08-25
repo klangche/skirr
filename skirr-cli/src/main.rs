@@ -54,6 +54,10 @@ enum Command {
         /// Poll interval in milliseconds
         #[arg(long, default_value_t = 500)]
         interval: u64,
+        /// Write a support-ready JSON timeline (events + root causes +
+        /// periodic patterns + display correlations) to this path
+        #[arg(long)]
+        timeline: Option<PathBuf>,
     },
     /// Write a JSON report of the current state
     Report {
@@ -91,7 +95,11 @@ fn run(cli: Cli) -> Result<ExitCode, BackendError> {
         Command::Hubs => cmd_hubs(&*backend, cli.json)?,
         Command::Ports => cmd_ports(&*backend, cli.json)?,
         Command::Diagnose => return cmd_diagnose(&*backend, cli.json, &profile),
-        Command::Monitor { duration, interval } => cmd_monitor(&*backend, duration, interval)?,
+        Command::Monitor {
+            duration,
+            interval,
+            timeline,
+        } => cmd_monitor(&*backend, duration, interval, timeline.as_deref())?,
         Command::Report { out, compact, html } => {
             cmd_report(&*backend, &out, &profile, compact, html)?
         }
@@ -272,6 +280,7 @@ fn cmd_monitor(
     backend: &dyn UsbBackend,
     duration: Option<u64>,
     interval_ms: u64,
+    timeline_path: Option<&Path>,
 ) -> BackendResult<()> {
     let mut session = backend.monitor()?;
     session.start_monitoring()?;
@@ -287,6 +296,8 @@ fn cmd_monitor(
     // Correlate raw events against the current topology snapshot.
     let topo = backend.get_topology()?;
     let mut correlator = skirr_core::correlate::EventCorrelator::new(&topo);
+    let mut raw_events: Vec<skirr_core::DiagnosticEvent> = Vec::new();
+    let mut timeline_entries: Vec<skirr_core::correlate::TimelineEntry> = Vec::new();
 
     while !shutdown_requested() {
         if let Some(secs) = duration {
@@ -296,6 +307,7 @@ fn cmd_monitor(
         }
         match session.poll_event(poll_interval)? {
             Some(event) => {
+                raw_events.push(event.clone());
                 let outcome = correlator.ingest(event);
                 match outcome.correlated {
                     Some(skirr_core::correlate::CorrelatedEvent::HubRemoval {
@@ -308,6 +320,13 @@ fn cmd_monitor(
                             hub_event.timestamp.to_rfc3339(),
                             hub_event.details,
                             child_disconnects
+                        );
+                        timeline_entries.push(
+                            skirr_core::correlate::TimelineEntry::from_hub_removal(
+                                &hub_event,
+                                child_disconnects,
+                                max_depth,
+                            ),
                         );
                     }
                     Some(skirr_core::correlate::CorrelatedEvent::Single(event)) => {
@@ -322,6 +341,8 @@ fn cmd_monitor(
                             port,
                             event.details
                         );
+                        timeline_entries
+                            .push(skirr_core::correlate::TimelineEntry::from_single(&event));
                     }
                     None => {}
                 }
@@ -337,7 +358,8 @@ fn cmd_monitor(
     }
     session.stop_monitoring()?;
 
-    let summary = correlator.finish(duration.unwrap_or_else(|| started.elapsed().as_secs()));
+    let duration_secs = duration.unwrap_or_else(|| started.elapsed().as_secs());
+    let summary = correlator.finish(duration_secs);
     println!(
         "Monitor stopped. {} event(s): {} connect(s), {} disconnect(s), {} re-enum(s); stability {}/100.",
         summary.total_events,
@@ -346,6 +368,25 @@ fn cmd_monitor(
         summary.re_enumerations,
         summary.stability_score
     );
+
+    // Support export: correlated timeline + post-hoc analyses.
+    if let Some(path) = timeline_path {
+        let report = skirr_core::correlate::TimelineReport {
+            generated: chrono::Utc::now(),
+            duration_secs,
+            entries: timeline_entries,
+            periodic_patterns: skirr_core::correlate::detect_periodic_drops(&raw_events, 0.25),
+            root_causes: skirr_core::correlate::attribute_root_causes(&topo, &raw_events),
+            display_correlations: skirr_core::correlate::correlate_display_events(&raw_events, 5),
+            summary,
+        };
+        let json = report
+            .to_pretty_json()
+            .map_err(|e| BackendError::os_api("cli", format!("timeline serialization: {e}")))?;
+        std::fs::write(path, json)
+            .map_err(|e| BackendError::os_api("cli", format!("write timeline: {e}")))?;
+        println!("Timeline written to {}", path.display());
+    }
     Ok(())
 }
 

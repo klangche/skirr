@@ -813,6 +813,9 @@ pub struct SystemTopology {
     /// Thunderbolt/USB4 fabric, separate from the USB device tree (Phase 10.1).
     #[serde(default)]
     pub thunderbolt_routers: Vec<crate::thunderbolt::ThunderboltRouter>,
+    /// USB-C power/CC/E-marker status per connector (Phase 10.2).
+    #[serde(default)]
+    pub type_c_ports: Vec<crate::typec_power::TypeCPortStatus>,
     pub events: Vec<DiagnosticEvent>,
     pub platform_info: PlatformInfo,
 }

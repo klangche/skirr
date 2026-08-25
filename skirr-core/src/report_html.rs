@@ -166,6 +166,82 @@ pub fn render_html(report: &SkirrReport) -> String {
         out.push_str("</ul></section>\n");
     }
 
+    // USB-C power status (Phase 10.2).
+    if !topo.type_c_ports.is_empty() {
+        out.push_str("<section id=\"usb-c-power\"><h2>USB-C power</h2><table><tr><th>Port</th><th>Power role</th><th>PD</th><th>Orientation</th><th>Status</th><th>Cable</th></tr>");
+        for port in &topo.type_c_ports {
+            let role = port
+                .power_role
+                .map(|r| format!("{r:?}"))
+                .unwrap_or_else(|| "?".into());
+            let pd = port
+                .pd_revision
+                .as_deref()
+                .map(|r| format!("PD {r}"))
+                .unwrap_or_else(|| "—".into());
+            let orient = match port.orientation {
+                crate::ConnectorOrientation::Normal => "normal",
+                crate::ConnectorOrientation::Flipped => "flipped",
+                _ => "?",
+            };
+            let status = if port.pd_active() {
+                "PD contract active"
+            } else if port.partner_attached {
+                "partner attached"
+            } else {
+                "no partner"
+            };
+            let cable = port
+                .emarker
+                .as_ref()
+                .map(|e| {
+                    let mut s = String::from("E-marker");
+                    if let Some(rating) = e.current_rating_a {
+                        let _ = write!(s, " {rating}A");
+                    }
+                    s
+                })
+                .unwrap_or_else(|| "—".into());
+            let _ = write!(
+                out,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{orient}</td><td>{status}</td><td>{}</td></tr>",
+                html_escape(&port.port_name),
+                html_escape(&role),
+                html_escape(&pd),
+                html_escape(&cable),
+            );
+        }
+        out.push_str("</table></section>\n");
+    }
+
+    // Display bandwidth plan (Phase 10.3).
+    let display_plan = crate::bandwidth::plan_display_bandwidth(topo);
+    if !display_plan.is_empty() {
+        out.push_str(
+            "<section id=\"display-bandwidth\"><h2>Display bandwidth</h2><table><tr><th>Display</th><th>Estimate</th><th>Via hub</th></tr>",
+        );
+        for req in &display_plan.requirements {
+            let gb = req.required_mbps as f64 / 1000.0;
+            let flag = if req.exceeds_upstream_uplink {
+                " <span class=\"sev-critical\">exceeds hub uplink</span>"
+            } else {
+                ""
+            };
+            let _ = write!(
+                out,
+                "<tr><td>{}</td><td>~{gb:.1} Gb/s{flag}</td><td>{}</td></tr>",
+                html_escape(&req.name),
+                html_escape(req.upstream_hub_label.as_deref().unwrap_or("—")),
+            );
+        }
+        let _ = write!(
+            out,
+            "<tr><td><strong>Combined</strong></td><td colspan=\"2\">~{:.1} Gb/s</td></tr>",
+            display_plan.total_required_mbps as f64 / 1000.0,
+        );
+        out.push_str("</table></section>\n");
+    }
+
     // Issues + bottlenecks.
     let by_id: HashMap<uuid::Uuid, &crate::UsbDevice> =
         topo.devices.iter().map(|d| (d.id, d)).collect();
@@ -619,6 +695,7 @@ mod tests {
             hubs: Vec::new(),
             displays: Vec::new(),
             thunderbolt_routers: Vec::new(),
+            type_c_ports: Vec::new(),
             events: Vec::new(),
             platform_info: empty_platform_info(),
         };

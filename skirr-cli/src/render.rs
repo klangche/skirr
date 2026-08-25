@@ -272,6 +272,84 @@ pub fn render_tree(topo: &SystemTopology) -> String {
         let _ = writeln!(out);
     }
 
+    // ------------------------------------------------------------------
+    // USB-C POWER (Phase 10.2): PD role/orientation/E-marker per connector.
+    // ------------------------------------------------------------------
+    if !topo.type_c_ports.is_empty() {
+        let _ = writeln!(out, "{}", "USB-C POWER".bold());
+        for port in &topo.type_c_ports {
+            let mut line = format!("{}", port.port_name.bold());
+            if let Some(role) = port.power_role {
+                let _ = write!(line, " · {role:?}");
+            }
+            if let Some(pd) = &port.pd_revision {
+                let _ = write!(line, " · PD {pd}");
+            }
+            if let Some(pt) = &port.port_type {
+                let _ = write!(line, " · type {pt}");
+            }
+            match port.orientation {
+                skirr_core::ConnectorOrientation::Normal => {
+                    let _ = write!(line, " · orientation normal");
+                }
+                skirr_core::ConnectorOrientation::Flipped => {
+                    let _ = write!(line, " · orientation flipped");
+                }
+                _ => {}
+            }
+            let _ = writeln!(
+                out,
+                "{line} · {}",
+                if port.pd_active() {
+                    "PD contract active".green()
+                } else if port.partner_attached {
+                    "partner attached".yellow()
+                } else {
+                    "no partner".normal()
+                }
+            );
+            if let Some(emarker) = &port.emarker {
+                let mut cable = String::from("  Cable E-marker:");
+                if let Some(rating) = emarker.current_rating_a {
+                    let _ = write!(cable, " {rating}A");
+                }
+                if let Some(mode) = &emarker.plug_mode {
+                    let _ = write!(cable, " mode {mode}");
+                }
+                if let (Some(v), Some(p)) = (emarker.vendor_id, emarker.product_id) {
+                    let _ = write!(cable, " ({v:04X}:{p:04X})");
+                }
+                let _ = writeln!(out, "{cable}");
+            }
+        }
+        let _ = writeln!(out);
+    }
+
+    // ------------------------------------------------------------------
+    // DISPLAY BANDWIDTH (Phase 10.3): estimated payloads vs hub uplinks.
+    // ------------------------------------------------------------------
+    let display_plan = skirr_core::bandwidth::plan_display_bandwidth(topo);
+    if !display_plan.is_empty() {
+        let _ = writeln!(out, "{}", "DISPLAY BANDWIDTH".bold());
+        for req in &display_plan.requirements {
+            let gb = req.required_mbps as f64 / 1000.0;
+            let upstream = req
+                .upstream_hub_label
+                .as_deref()
+                .map(|h| format!(" via {h}"))
+                .unwrap_or_default();
+            let flag = if req.exceeds_upstream_uplink {
+                " EXCEEDS HUB UPLINK".red().to_string()
+            } else {
+                String::new()
+            };
+            let _ = writeln!(out, "{}: ~{gb:.1} Gb/s{upstream}{flag}", req.name.bold());
+        }
+        let total_gb = display_plan.total_required_mbps as f64 / 1000.0;
+        let _ = writeln!(out, "Combined estimate: ~{total_gb:.1} Gb/s");
+        let _ = writeln!(out);
+    }
+
     // Devices no controller claimed (shouldn't happen post-topology, but
     // never silently drop data from the view).
     let orphans: Vec<&UsbDevice> = topo
@@ -645,6 +723,7 @@ mod tests {
             hubs: Vec::new(),
             displays: Vec::new(),
             thunderbolt_routers: Vec::new(),
+            type_c_ports: Vec::new(),
             events: Vec::new(),
             platform_info: platform(),
         }
@@ -782,6 +861,7 @@ mod tests {
             hubs: Vec::new(),
             displays: Vec::new(),
             thunderbolt_routers: Vec::new(),
+            type_c_ports: Vec::new(),
             events: Vec::new(),
             platform_info: platform(),
         };

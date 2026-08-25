@@ -42,6 +42,46 @@ fn read_attr(dir: &Path, attr: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Walk `/sys/class/typec` for connector power status (Phase 10.2). Absent
+/// class (old kernels, desktops without Type-C) yields an empty list.
+pub fn collect_typec_ports() -> Vec<skirr_core::TypeCPortStatus> {
+    const TYPEC_CLASS: &str = "/sys/class/typec";
+    let mut ports = Vec::new();
+    let Ok(entries) = std::fs::read_dir(TYPEC_CLASS) else {
+        return ports;
+    };
+    let mut dirs: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("port"))
+        })
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        // Attribute lookup falls through port → partner → plug → plug identity.
+        let partner_exists = dir.join("partner").exists();
+        let attrs = |attr: &str| -> Option<String> {
+            read_attr(&dir, attr)
+                .or_else(|| read_attr(&dir.join("partner"), attr))
+                .or_else(|| read_attr(&dir.join("plug"), attr))
+                .or_else(|| read_attr(&dir.join("plug").join("identity"), attr))
+                .or_else(|| (attr == "partner" && partner_exists).then(|| "attached".to_string()))
+        };
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if let Some(port) = skirr_core::typec_power::parse_linux_typec_port(&name, &attrs) {
+            ports.push(port);
+        }
+    }
+    ports
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

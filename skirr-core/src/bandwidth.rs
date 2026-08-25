@@ -83,6 +83,102 @@ fn hub_label(hub: &UsbDevice) -> String {
         .unwrap_or_else(|| format!("{:04x}:{:04x}", hub.vendor_id, hub.product_id))
 }
 
+// ---------------------------------------------------------------------------
+// Display bandwidth planning (Phase 10.3)
+// ---------------------------------------------------------------------------
+
+/// Estimated video payload of one display, used for multi-display planning.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DisplayRequirement {
+    pub display_platform_id: String,
+    pub name: String,
+    /// Estimated payload in Mb/s including blanking and encoding overhead.
+    pub required_mbps: u32,
+    /// Nearest upstream physical hub, if the display hangs under one.
+    pub upstream_hub_label: Option<String>,
+    /// The estimate alone exceeds that hub's uplink capacity.
+    pub exceeds_upstream_uplink: bool,
+}
+
+/// Multi-display bandwidth plan: per-display estimates plus the combined
+/// load. Estimates only — real tunneling shares lane capacity with USB/PCIe,
+/// which no OS API exposes; this flags the gross oversubscription cases.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MultiDisplayPlan {
+    pub requirements: Vec<DisplayRequirement>,
+    pub total_required_mbps: u32,
+}
+
+impl MultiDisplayPlan {
+    pub fn is_empty(&self) -> bool {
+        self.requirements.is_empty()
+    }
+}
+
+/// Rough video payload: pixels × refresh × bits-per-pixel × 1.25 (blanking +
+/// 8b/10b). Good enough to spot "4K60 through a 480 Mb/s hub" nonsense.
+pub fn estimate_display_mbps(width: u32, height: u32, refresh_hz: f32, bits_per_pixel: u32) -> u32 {
+    ((width as f64 * height as f64 * refresh_hz as f64 * bits_per_pixel as f64 * 1.25)
+        / 1_000_000.0) as u32
+}
+
+/// Plan display payloads against the hub chains they hang from.
+pub fn plan_display_bandwidth(topo: &SystemTopology) -> MultiDisplayPlan {
+    let by_id: std::collections::HashMap<Uuid, &UsbDevice> =
+        topo.devices.iter().map(|d| (d.id, d)).collect();
+    let mut requirements = Vec::new();
+
+    for display in &topo.displays {
+        let Some(res) = display.current_resolution.as_ref() else {
+            continue;
+        };
+        // HDR panels commonly run 30 bpp (10-bit RGB).
+        let bpp = if display.hdr_supported { 30 } else { 24 };
+        let required_mbps = estimate_display_mbps(
+            res.width as u32,
+            res.height as u32,
+            display.current_refresh_rate.unwrap_or(60) as f32,
+            bpp,
+        );
+        // Locate the USB device the display hangs from: `usb_path` (GPU
+        // driver-provided device chain) wins, platform-id match is the
+        // fallback for backends that mirror display IDs onto devices.
+        let mut cursor = display
+            .usb_path
+            .as_ref()
+            .and_then(|path| path.last())
+            .and_then(|tip| by_id.get(tip).copied())
+            .or_else(|| {
+                topo.devices
+                    .iter()
+                    .find(|d| d.platform_id == display.platform_id)
+            });
+        let mut upstream_hub_label = None;
+        let mut exceeds = false;
+        while let Some(dev) = cursor {
+            if dev.is_hub || dev.hub_info.is_some() {
+                upstream_hub_label = Some(hub_label(dev));
+                let uplink = dev.current_link_speed.mbps() as u32;
+                exceeds = uplink > 0 && required_mbps > uplink;
+                break;
+            }
+            cursor = dev.parent_id.and_then(|pid| by_id.get(&pid)).copied();
+        }
+        requirements.push(DisplayRequirement {
+            display_platform_id: display.platform_id.clone(),
+            name: display.name.clone().unwrap_or_else(|| "Display".into()),
+            required_mbps,
+            upstream_hub_label,
+            exceeds_upstream_uplink: exceeds,
+        });
+    }
+    requirements.sort_by(|a, b| b.required_mbps.cmp(&a.required_mbps));
+    MultiDisplayPlan {
+        total_required_mbps: requirements.iter().map(|r| r.required_mbps).sum(),
+        requirements,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +193,7 @@ mod tests {
             hubs: Vec::new(),
             displays: Vec::new(),
             thunderbolt_routers: Vec::new(),
+            type_c_ports: Vec::new(),
             events: Vec::new(),
             platform_info: PlatformInfo {
                 os: "test".into(),
@@ -203,5 +300,72 @@ mod tests {
             BottleneckSeverity::Minor,
             "unknown utilization never alarms"
         );
+    }
+
+    #[test]
+    fn display_estimate_matches_hand_math() {
+        // 4K60 24bpp: 3840*2160*60*24*1.25 / 1e6 ≈ 14.9 Gb/s.
+        let est = estimate_display_mbps(3840, 2160, 60.0, 24);
+        assert!((14_900..15_000).contains(&est), "got {est}");
+        // 1080p60 with overhead is ~3.7 Gb/s.
+        let fhd = estimate_display_mbps(1920, 1080, 60.0, 24);
+        assert!((3_700..3_800).contains(&fhd), "got {fhd}");
+    }
+
+    #[test]
+    fn display_plan_flags_display_behind_slow_hub() {
+        use crate::model::{DisplayInfo, DisplayResolution};
+
+        let mut topo = topo(Vec::new());
+        let mut hub = device(None, UsbSpeed::HighSpeed); // 480 Mb/s uplink
+        hub.is_hub = true;
+        topo.devices.push(hub.clone());
+
+        let display = DisplayInfo {
+            id: uuid::Uuid::new_v4(),
+            platform_id: "DISPLAY\\TEST1".into(),
+            manufacturer_id: None,
+            product_code: None,
+            serial_number: None,
+            manufacture_week: None,
+            manufacture_year: None,
+            edid_version: None,
+            name: Some("Studio Panel".into()),
+            serial_number_str: None,
+            max_horizontal_size_cm: None,
+            max_vertical_size_cm: None,
+            supported_resolutions: Vec::new(),
+            preferred_resolution: None,
+            current_resolution: Some(DisplayResolution {
+                width: 1920,
+                height: 1080,
+                aspect_ratio: None,
+                is_interlaced: false,
+            }),
+            refresh_rates: vec![60],
+            current_refresh_rate: Some(60),
+            color_depth: None,
+            hdr_supported: false,
+            hdr_metadata: None,
+            display_type: crate::DisplayType::Unknown,
+            connection_type: None,
+            gpu_id: None,
+            usb_path: Some(vec![topo.devices[0].id]),
+            is_primary: false,
+            is_internal: false,
+            is_enabled: true,
+            position: None,
+            scale_factor: None,
+            edid_raw: None,
+        };
+        topo.displays.push(display);
+
+        let plan = plan_display_bandwidth(&topo);
+        assert_eq!(plan.requirements.len(), 1);
+        let req = &plan.requirements[0];
+        assert_eq!(req.name, "Studio Panel");
+        assert!(req.exceeds_upstream_uplink, "~3.1 Gb/s cannot fit 480 Mb/s");
+        assert_eq!(req.upstream_hub_label.as_deref(), Some("2109:0817"));
+        assert_eq!(plan.total_required_mbps, req.required_mbps);
     }
 }

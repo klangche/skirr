@@ -39,6 +39,7 @@ pub fn build(
         hubs: Vec::new(),
         displays: Vec::new(),
         thunderbolt_routers: Vec::new(),
+        type_c_ports: Vec::new(),
         events: Vec::new(),
         platform_info: empty_platform_info(),
     };
