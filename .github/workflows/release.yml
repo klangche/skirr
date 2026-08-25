@@ -6,6 +6,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0-alpha.1). Defaults to Cargo.toml base version."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -41,6 +47,29 @@ jobs:
           targets: ${{ matrix.targets || matrix.target }}
       - uses: Swatinem/rust-cache@v2
 
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.1.0"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version in Cargo.toml
+        if: steps.version.outputs.version != '0.1.0'
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for toml in skirr-*/Cargo.toml; do
+            sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" "$toml"
+            rm -f "$toml.bak"
+          done
+
       - name: Build (release)
         run: |
           if [ "$RUNNER_OS" = "MacOS" ]; then
@@ -68,7 +97,7 @@ jobs:
         if: runner.os == 'MacOS'
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ steps.version.outputs.version }}"
           APP="Skirr.app"
           mkdir -p "dist/$APP/Contents/MacOS" "dist/dmg-staging"
           # Merge both architecture slices into one universal binary.
@@ -97,7 +126,7 @@ jobs:
           cp -R "dist/$APP" dist/dmg-staging/
           ln -s /Applications dist/dmg-staging/Applications
           cat > dist/dmg-staging/HOW\ TO\ RUN.txt <<NOTE
-          Skirr ${GITHUB_REF_NAME} (macOS, universal: Apple Silicon + Intel)
+          Skirr v${VERSION} (macOS, universal: Apple Silicon + Intel)
 
           FIRST LAUNCH - ONE-TIME STEP
           ----------------------------
@@ -135,7 +164,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ steps.version.outputs.version }}"
           STAGING="dist/skirr_${VERSION}_amd64"
           mkdir -p "$STAGING/DEBIAN" "$STAGING/usr/bin"
           install -m 755 "target/${{ matrix.target }}/release/skirr" "$STAGING/usr/bin/skirr"
