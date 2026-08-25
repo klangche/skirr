@@ -23,6 +23,6 @@
     }
   },
   "bundle": {
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/skirr_icon.png", "icons/icon.ico"]
   }
 }
