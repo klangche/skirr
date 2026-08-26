@@ -36,6 +36,8 @@ jobs:
         working-directory: skirr-gui/src-tauri
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -53,8 +55,9 @@ jobs:
         run: |
           set -euo pipefail
           BASE="0.1.0"
-          RUN="${GITHUB_RUN_NUMBER}"
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          RUN="${{ github.event.workflow_run.run_number || github.run_number }}"
+          BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
             VERSION="${BASE}-beta.${RUN}"
           else
             VERSION="${BASE}-alpha.${RUN}"
@@ -165,10 +168,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="0.1.0"
+          RUN="${{ github.event.workflow_run.run_number || github.run_number }}"
+          BRANCH="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            VERSION="${BASE}-beta.${RUN}"
+          else
+            VERSION="${BASE}-alpha.${RUN}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Create tag
         run: |
-          VERSION="0.1.0-alpha.${GITHUB_RUN_NUMBER}"
+          VERSION="${{ steps.version.outputs.version }}"
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
@@ -179,6 +199,6 @@ jobs:
       - name: Attach artifacts to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v0.1.0-alpha.${{ github.run_number }}"
+          tag_name: "v${{ steps.version.outputs.version }}"
           files: dist/*
           generate_release_notes: true
