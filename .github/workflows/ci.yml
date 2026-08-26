@@ -185,7 +185,7 @@ jobs:
           Write-Host "Found installer: $($exe.FullName)"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -198,8 +198,12 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve version
         id: version
@@ -215,19 +219,14 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
-
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
           path: dist
-      - name: Attach artifacts to release
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ steps.version.outputs.version }}"
+          name: "v${{ steps.version.outputs.version }}"
           files: dist/*
           generate_release_notes: true
