@@ -153,7 +153,11 @@ pub(crate) fn build(
         .collect();
 
     for dev in &mut devices {
-        if let Some(&port_count) = hub_port_counts.iter().find(|(id, _)| *id == dev.id).map(|(_, n)| n) {
+        if let Some(&port_count) = hub_port_counts
+            .iter()
+            .find(|(id, _)| *id == dev.id)
+            .map(|(_, n)| n)
+        {
             dev.hub_info = Some(HubInfo {
                 port_count,
                 is_powered: false,
@@ -200,8 +204,12 @@ pub(crate) fn build(
                         } else {
                             match kid.device_class {
                                 skirr_core::UsbClass::Hub => skirr_core::DockPortType::UsbC,
-                                skirr_core::UsbClass::MassStorage => skirr_core::DockPortType::SdCard,
-                                skirr_core::UsbClass::Audio => skirr_core::DockPortType::AudioJack35,
+                                skirr_core::UsbClass::MassStorage => {
+                                    skirr_core::DockPortType::SdCard
+                                }
+                                skirr_core::UsbClass::Audio => {
+                                    skirr_core::DockPortType::AudioJack35
+                                }
                                 _ => skirr_core::DockPortType::UsbA,
                             }
                         };

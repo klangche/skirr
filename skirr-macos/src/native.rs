@@ -437,8 +437,7 @@ mod iokit {
         // (hub controllers, port objects) that lack USB vendor/product ids.
         for _ in 0..8 {
             let mut parent: IoObject = 0;
-            let kr =
-                unsafe { IORegistryEntryGetParentEntry(cursor, plane.as_ptr(), &mut parent) };
+            let kr = unsafe { IORegistryEntryGetParentEntry(cursor, plane.as_ptr(), &mut parent) };
             if kr != KERN_SUCCESS || parent == 0 {
                 return None;
             }

@@ -120,7 +120,11 @@ pub fn render_tree(topo: &SystemTopology) -> String {
 
     // Thunderbolt / USB4 routers — shown inline with internal controllers.
     for router in &topo.thunderbolt_routers {
-        let kind = if router.is_usb4 { "USB4" } else { "Thunderbolt" };
+        let kind = if router.is_usb4 {
+            "USB4"
+        } else {
+            "Thunderbolt"
+        };
         let mut line = format!("[{}] {}", router.id, router.name);
         if let Some(vendor) = &router.vendor_name {
             let _ = write!(line, " ({vendor})");
@@ -477,19 +481,11 @@ fn write_chain(
                         write_node(out, kid);
                         write_chain(out, kid, by_parent, &child_prefix, is_last);
                     } else {
-                        let _ = writeln!(
-                            out,
-                            "{child_prefix}{glyph} {} — n/a",
-                            dp.label
-                        );
+                        let _ = writeln!(out, "{child_prefix}{glyph} {} — n/a", dp.label);
                     }
                 } else {
                     // Non-USB port (HDMI, Ethernet, Audio, etc.)
-                    let _ = writeln!(
-                        out,
-                        "{child_prefix}{glyph} {}",
-                        dp.label
-                    );
+                    let _ = writeln!(out, "{child_prefix}{glyph} {}", dp.label);
                 }
             }
             // Emit children without port numbers (compound interfaces).
