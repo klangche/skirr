@@ -146,7 +146,7 @@ pub fn render_tree(topo: &SystemTopology) -> String {
         let _ = writeln!(out, "  Port {port_num} ── ",);
         if let Some(dev) = root_port_map.get(port_num) {
             // Occupied port — show the dock with its internal structure.
-            write_dock_node(&mut out, dev, &by_parent, topo, "    ");
+            write_dock_node(&mut out, dev, &by_parent, "    ");
         } else {
             let _ = writeln!(out, "    n/a");
         }
@@ -469,7 +469,6 @@ fn write_dock_node(
     out: &mut String,
     dev: &UsbDevice,
     by_parent: &HashMap<uuid::Uuid, Vec<&UsbDevice>>,
-    topo: &SystemTopology,
     prefix: &str,
 ) {
     use std::fmt::Write;
@@ -480,7 +479,6 @@ fn write_dock_node(
     fn count_subtree(
         dev_id: uuid::Uuid,
         by_parent: &HashMap<uuid::Uuid, Vec<&UsbDevice>>,
-        topo: &SystemTopology,
         hubs: &mut u32,
         devices: &mut u32,
     ) {
@@ -491,11 +489,11 @@ fn write_dock_node(
                 {
                     *hubs += 1;
                 }
-                count_subtree(kid.id, by_parent, topo, hubs, devices);
+                count_subtree(kid.id, by_parent, hubs, devices);
             }
         }
     }
-    count_subtree(dev.id, by_parent, topo, &mut total_hubs, &mut total_devices);
+    count_subtree(dev.id, by_parent, &mut total_hubs, &mut total_devices);
     let hops = dev.hop_count;
     let tiers = dev.tier;
 
