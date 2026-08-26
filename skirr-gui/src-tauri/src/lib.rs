@@ -581,7 +581,10 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
     }
 
     // ------------------------------------------------------------------
-    // Build port nodes from Thunderbolt receptacles or root hub ports.
+    // Build port nodes from root hub ports.
+    // Group root hub ports that belong to the same dock (same VID) into
+    // a single logical port, since Apple Silicon splits USB2/USB3 hubs
+    // across separate root ports.
     // ------------------------------------------------------------------
     let mut port_nodes: Vec<TreeNode> = Vec::new();
 
@@ -601,33 +604,47 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
         }
     }
 
-    // Physical ports come from Thunderbolt receptacles.
-    let mut physical_ports: Vec<(u8, String)> = Vec::new();
-    for router in &topo.thunderbolt_routers {
-        for (i, rec) in router.receptacles.iter().enumerate() {
-            let port_num = (i + 1) as u8;
-            let rec_id = rec.id.as_deref().unwrap_or("?");
-            let speed = rec.current_speed.as_deref().unwrap_or("");
-            let label = if speed.is_empty() {
-                format!("Thunderbolt {rec_id}")
-            } else {
-                format!("Thunderbolt {rec_id} ({speed})")
-            };
-            physical_ports.push((port_num, label));
+    // Physical ports from root hubs.
+    let mut physical_ports: Vec<u8> = Vec::new();
+    for rh in &topo.root_hubs {
+        for p in 1..=rh.port_count {
+            physical_ports.push(p);
         }
     }
+    physical_ports.sort_unstable();
+    physical_ports.dedup();
 
-    // Fallback: if no Thunderbolt, use root hub ports.
-    if physical_ports.is_empty() {
-        for rh in &topo.root_hubs {
-            for p in 1..=rh.port_count {
-                physical_ports.push((p, format!("Port {p}")));
+    // Group by VID (dock identity) — same logic as CLI.
+    let mut seen_ports: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    let mut grouped: Vec<(u8, Vec<u8>)> = Vec::new(); // (first_port, all_ports)
+
+    for &pn in &physical_ports {
+        if seen_ports.contains(&pn) {
+            continue;
+        }
+        if let Some(dev) = root_port_map.get(&pn) {
+            let vid_key = format!("vid:{:04X}", dev.vendor_id);
+            let mut group = vec![pn];
+            seen_ports.insert(pn);
+            for &p in &physical_ports {
+                if !seen_ports.contains(&p) {
+                    if let Some(d) = root_port_map.get(&p) {
+                        if format!("vid:{:04X}", d.vendor_id) == vid_key {
+                            group.push(p);
+                            seen_ports.insert(p);
+                        }
+                    }
+                }
             }
+            grouped.push((pn, group));
+        } else {
+            seen_ports.insert(pn);
+            grouped.push((pn, vec![pn]));
         }
     }
 
-    for (port_num, port_label) in &physical_ports {
-        if let Some(dev) = root_port_map.get(port_num) {
+    for (first_port, _group) in &grouped {
+        if let Some(dev) = root_port_map.get(first_port) {
             // Occupied port — build dock node with internal hubs as children.
             let mut node = build_tree_node(
                 dev,
@@ -686,12 +703,12 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
                 total_devices,
                 if total_devices == 1 { "" } else { "s" }
             ));
-            node.label = format!("Port {port_num} ── {}", node.label);
+            node.label = format!("Port {first_port} ── {}", node.label);
             port_nodes.push(node);
         } else {
             // Unoccupied port.
             port_nodes.push(TreeNode {
-                label: format!("Port {port_num} ── n/a"),
+                label: format!("Port {first_port} ── n/a"),
                 meta: None,
                 vid: None,
                 pid: None,

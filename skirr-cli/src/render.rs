@@ -80,6 +80,31 @@ pub fn devices_table(devices: &[UsbDevice]) -> String {
     Table::new(rows).with(Style::blank()).to_string()
 }
 
+/// Walk up the parent chain to find the dock anchor for a device.
+/// The dock anchor is the root-most hub with the same vendor_id.
+/// Returns the anchor's VID as a grouping key.
+fn find_dock_anchor(dev: &UsbDevice, devices: &[UsbDevice]) -> Option<String> {
+    // Walk parents looking for a hub that could be the dock's root hub.
+    let mut current_parent = dev.parent_id;
+
+    while let Some(parent_id) = current_parent {
+        if let Some(parent) = devices.iter().find(|d| d.id == parent_id) {
+            if parent.is_hub || parent.device_class == skirr_core::UsbClass::Hub {
+                if let Some(family) = parent.properties.get("dock_family") {
+                    return Some(format!("{}:{}", parent.vendor_id, family));
+                }
+            }
+            current_parent = parent.parent_id;
+        } else {
+            break;
+        }
+    }
+
+    // Root-level: use VID as the grouping key so that hubs from the same
+    // dock vendor (e.g. Realtek USB2 + USB3) get merged into one dock node.
+    Some(format!("vid:{:04X}", dev.vendor_id))
+}
+
 /// ASCII tree: controllers → root hubs → devices by tier.
 ///
 /// Tier-1 attachments live under their synthesized root hub
@@ -92,60 +117,91 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     let by_parent = children_by_parent(topo);
 
     // ------------------------------------------------------------------
-    // HOST: physical ports from Thunderbolt/USB4 receptacles.
+    // HOST: physical ports from root hubs.
     // ------------------------------------------------------------------
     let _ = writeln!(out, "{}", "HOST".bold());
 
-    // Collect all physical ports: Thunderbolt receptacles first, then root
-    // hub ports for any not covered by Thunderbolt.
-    let mut physical_ports: Vec<(u8, String)> = Vec::new();
-
-    // Thunderbolt / USB4 receptacles are the physical ports.
-    for router in &topo.thunderbolt_routers {
-        for (i, rec) in router.receptacles.iter().enumerate() {
-            let port_num = (i + 1) as u8;
-            let rec_id = rec.id.as_deref().unwrap_or("?");
-            let speed = rec.current_speed.as_deref().unwrap_or("");
-            let label = if speed.is_empty() {
-                format!("Thunderbolt {rec_id}")
-            } else {
-                format!("Thunderbolt {rec_id} ({speed})")
-            };
-            physical_ports.push((port_num, label));
-        }
-    }
-
-    // If no Thunderbolt, fall back to root hub ports.
-    if physical_ports.is_empty() {
-        for rh in &topo.root_hubs {
-            for p in 1..=rh.port_count {
-                physical_ports.push((p, format!("Port {p}")));
+    // Collect tier-1 external devices keyed by root hub port.
+    let mut root_port_map: std::collections::HashMap<u8, &UsbDevice> =
+        std::collections::HashMap::new();
+    for dev in &topo.devices {
+        if !dev.is_internal && dev.parent_id.is_none() {
+            if let Some(pn) = dev.port_number {
+                root_port_map.insert(pn, dev);
             }
         }
     }
 
-    // For each physical port, find the tier-1 device (dock) attached to it.
-    // We map root hub port numbers to physical ports by position.
-    let mut root_port_devices: Vec<&UsbDevice> = topo
-        .devices
-        .iter()
-        .filter(|d| !d.is_internal && d.parent_id.is_none())
-        .collect();
-    root_port_devices.sort_by_key(|d| d.port_number.unwrap_or(0));
+    // Group root hub ports into physical ports.
+    // On Apple Silicon, the USB2 and USB3 hubs of the same dock sit on
+    // separate root ports but share a dock_anchor → merge them.
+    let mut physical_ports: Vec<u8> = Vec::new();
+    for rh in &topo.root_hubs {
+        for p in 1..=rh.port_count {
+            physical_ports.push(p);
+        }
+    }
+    physical_ports.sort_unstable();
+    physical_ports.dedup();
 
-    // Map root hub port → device.
-    let mut root_port_map: std::collections::HashMap<u8, &UsbDevice> =
+    // Identify dock anchors: root-most external hub that has dock_family
+    // or is explicitly marked as dock_anchor. All root ports whose device
+    // shares the same anchor get merged into one logical port.
+    let mut anchor_ports: std::collections::HashMap<String, Vec<u8>> =
         std::collections::HashMap::new();
-    for dev in &root_port_devices {
-        if let Some(pn) = dev.port_number {
-            root_port_map.insert(pn, dev);
+    let mut seen_ports: std::collections::HashSet<u8> = std::collections::HashSet::new();
+
+    for &pn in &physical_ports {
+        if seen_ports.contains(&pn) {
+            continue;
+        }
+        if let Some(dev) = root_port_map.get(&pn) {
+            // Walk up to find the dock anchor (root-most hub with dock_family).
+            let anchor = find_dock_anchor(dev, &topo.devices);
+            if let Some(anchor) = anchor {
+                let entry = anchor_ports.entry(anchor.clone()).or_default();
+                // Collect all root ports that belong to this dock anchor.
+                for &p in &physical_ports {
+                    if !seen_ports.contains(&p) {
+                        if let Some(d) = root_port_map.get(&p) {
+                            if find_dock_anchor(d, &topo.devices).as_deref()
+                                == Some(anchor.as_str())
+                            {
+                                entry.push(p);
+                                seen_ports.insert(p);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Not part of a dock — standalone device on its own port.
+                seen_ports.insert(pn);
+            }
         }
     }
 
-    for (port_num, _port_label) in &physical_ports {
-        let _ = writeln!(out, "  Port {port_num} ── ",);
-        if let Some(dev) = root_port_map.get(port_num) {
-            // Occupied port — show the dock with its internal structure.
+    // Render each physical port.
+    for &pn in &physical_ports {
+        if seen_ports.contains(&pn) && !anchor_ports.values().any(|v| v.contains(&pn)) {
+            // Already handled via anchor grouping or standalone.
+            continue;
+        }
+
+        // Check if this port is part of a merged dock group.
+        if let Some((_anchor_id, _ports)) = anchor_ports.iter().find(|(_, v)| v.contains(&pn)) {
+            // Render merged dock: pick the first device as the dock header.
+            let _ = writeln!(out, "  Port {pn} ── ");
+            if let Some(dev) = root_port_map.get(&pn) {
+                write_dock_node(&mut out, dev, &by_parent, "    ");
+            }
+            // Mark other ports in this group as rendered.
+            let _ = writeln!(out);
+            continue;
+        }
+
+        // Standalone port.
+        let _ = writeln!(out, "  Port {pn} ── ");
+        if let Some(dev) = root_port_map.get(&pn) {
             write_dock_node(&mut out, dev, &by_parent, "    ");
         } else {
             let _ = writeln!(out, "    n/a");
@@ -507,25 +563,26 @@ fn write_dock_node(
     } else {
         String::new()
     };
-    let _ = write!(
-        out,
-        "{}{hub_mark} (Hubs {total_hubs}, Hops {hops}, Tiers {tiers}, Devices {total_devices})",
+    // Pick a human-readable name for the dock:
+    // 1. dock_family property (e.g. "Unisynk 8-port USB-C Hub V3")
+    // 2. product name from the device
+    // 3. generic "MultiDock" if we have multiple hubs, else device name
+    let dock_name = if let Some(family) = dev.properties.get("dock_family") {
+        family.clone()
+    } else if total_hubs > 1 {
+        "MultiDock".to_string()
+    } else {
         dev.product
             .as_deref()
             .or(dev.manufacturer.as_deref())
-            .unwrap_or("device"),
-    );
-    let _ = writeln!(
+            .unwrap_or("device")
+            .to_string()
+    };
+    let _ = write!(
         out,
-        " ({:04X}:{:04X}){}",
-        dev.vendor_id,
-        dev.product_id,
-        if let Some(family) = dev.properties.get("dock_family") {
-            format!(" ({family})")
-        } else {
-            String::new()
-        }
+        "{dock_name}{hub_mark} (Hubs {total_hubs}, Hops {hops}, Tiers {tiers}, Devices {total_devices})",
     );
+    let _ = writeln!(out, " ({:04X}:{:04X})", dev.vendor_id, dev.product_id,);
 
     // Find direct children (internal hubs).
     let Some(direct_kids) = by_parent.get(&dev.id) else {
