@@ -103,6 +103,15 @@ pub fn annotate_docks(topo: &mut SystemTopology) {
     }
 }
 
+/// Look up a known dock port layout by the VID:PID of one of its USB hubs.
+/// Returns `None` for unknown products — the topology builder falls back
+/// to detecting ports dynamically from hub children + connected displays.
+pub fn dock_port_layout(_vid: u16, _pid: u16) -> Option<&'static [crate::model::DockPort]> {
+    // No hardcoded database — all port detection is done at runtime from
+    // IOKit hub children and IODisplayConnect entries.
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

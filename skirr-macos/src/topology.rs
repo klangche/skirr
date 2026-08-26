@@ -25,14 +25,22 @@ use uuid::Uuid;
 /// locationID encodes the path as nibbles from the most significant side,
 /// with the FIRST nibble identifying the controller/bus domain (not a port):
 /// `0x14230000` = bus 1, then ports 4 → 2 → 3 down the chain. The child's
-/// immediate port is the first nibble position where the parent's nibble is
-/// zero. Devices attached straight to a controller therefore take their
-/// SECOND nibble as the root-hub port number.
+/// immediate port is the first non-zero nibble position where the parent's
+/// nibble is zero. Devices attached straight to a controller therefore take
+/// their root-hub port from the first port-level nibble.
+///
+/// On Apple Silicon the bus nibble sits at position 6 (not 7 as on Intel),
+/// so we detect the bus nibble dynamically instead of hard-coding 6.
 pub(crate) fn port_from_location(child: u32, parent: Option<u32>) -> Option<u8> {
     let nibble_at = |loc: u32, pos: u8| ((loc >> (pos * 4)) & 0xF) as u8;
     let depth_limit = match parent {
         Some(p) if p != 0 => (0..8).find(|&pos| nibble_at(p, pos) == 0)?,
-        _ => 6, // skip the bus-domain nibble at position 7
+        _ => {
+            // Find the bus nibble (highest non-zero nibble) and start one
+            // position below it to skip past the bus domain.
+            let bus_pos = (0..8).rev().find(|&pos| nibble_at(child, pos) != 0)?;
+            bus_pos.saturating_sub(1)
+        }
     };
     // First non-zero nibble at or after the parent's depth.
     (depth_limit..8)
@@ -80,23 +88,163 @@ pub(crate) fn build(
         }
     }
 
-    // Populate hub_info for devices that are hubs and have a port count from IOKit.
-    for dev in &mut devices {
-        if dev.is_hub {
+    // Populate hub_info for devices that are hubs.
+    // Strategy: IOKit port-count > known chip database > max child port number > default (4).
+    fn known_hub_port_count(vid: u16, pid: u16) -> Option<u8> {
+        match (vid, pid) {
+            // Terminus Technology FE1.1s — 4-port USB2 hub
+            (0x1A40, 0x0101) => Some(4),
+            (0x1A40, 0x0201) => Some(4),
+            // Terminus Technology FE2.1 — 4-port USB2 hub
+            (0x1A40, 0x0801) => Some(4),
+            // Realtek RTS5411 — 4-port USB3 hub
+            (0x0BDA, 0x0411) => Some(4),
+            // Realtek RTS5413 — 4-port USB3 hub
+            (0x0BDA, 0x5413) => Some(4),
+            // Realtek RTS54 (generic) — 4-port USB2 hub side
+            (0x0BDA, 0x5411) => Some(4),
+            // Genesys Logic GL3523 — 4-port USB3 hub
+            (0x05E3, 0x0620) => Some(4),
+            // Genesys Logic GL3521 — 4-port USB3 hub
+            (0x05E3, 0x0610) => Some(4),
+            // Genesys Logic GL850/852 — 4-port USB2 hub
+            (0x05E3, 0x0608) => Some(4),
+            // VIA Labs VL810 — 4-port USB3 hub
+            (0x2109, 0x3431) => Some(4),
+            // VIA Labs VL811 — 4-port USB3 hub
+            (0x2109, 0x3432) => Some(4),
+            // VIA Labs VL812 — 4-port USB3 hub
+            (0x2109, 0x0812) => Some(4),
+            // Microchip USB2514 — 4-port USB2 hub
+            (0x0424, 0x2514) => Some(4),
+            // Microchip USB2517 — 7-port USB2 hub
+            (0x0424, 0x2517) => Some(7),
+            // Cypress CY7C65632 — 4-port USB2 hub
+            (0x04B4, 0x6572) => Some(4),
+            _ => None,
+        }
+    }
+
+    // Build a lookup of device_id -> UsbDevice for the fallback pass.
+    // Compute hub port counts in two passes to avoid borrow conflicts.
+    let devices_by_id: HashMap<Uuid, &UsbDevice> = devices.iter().map(|d| (d.id, d)).collect();
+    let hub_port_counts: Vec<(Uuid, u8)> = devices
+        .iter()
+        .filter(|d| d.is_hub && d.hub_info.is_none())
+        .filter_map(|dev| {
             let raw = raw_devices
                 .iter()
                 .find(|r| r.instance_id == dev.platform_id);
-            if let Some(port_count) = raw.and_then(|r| r.hub_port_count).filter(|&n| n > 0) {
-                dev.hub_info = Some(HubInfo {
-                    port_count,
-                    is_powered: false,
-                    power_source: HubPowerSource::Unknown,
-                    supports_mtt: false,
-                    tt_count: 0,
-                    tt_type: HubTTType::Unknown,
-                    hub_speed: dev.max_supported_speed,
-                    ports: Vec::new(),
-                });
+            let port_count = raw
+                .and_then(|r| r.hub_port_count)
+                .filter(|&n| n > 0)
+                .or_else(|| known_hub_port_count(dev.vendor_id, dev.product_id))
+                .or_else(|| {
+                    children.get(&dev.id).map(|kids| {
+                        kids.iter()
+                            .filter_map(|kid_id| devices_by_id.get(kid_id))
+                            .filter_map(|kid| kid.port_number)
+                            .max()
+                            .unwrap_or(4)
+                    })
+                })?;
+            Some((dev.id, port_count))
+        })
+        .collect();
+
+    for dev in &mut devices {
+        if let Some(&port_count) = hub_port_counts.iter().find(|(id, _)| *id == dev.id).map(|(_, n)| n) {
+            dev.hub_info = Some(HubInfo {
+                port_count,
+                is_powered: false,
+                power_source: HubPowerSource::Unknown,
+                supports_mtt: false,
+                tt_count: 0,
+                tt_type: HubTTType::Unknown,
+                hub_speed: dev.max_supported_speed,
+                ports: Vec::new(),
+                dock_ports: Vec::new(),
+            });
+        }
+    }
+
+    // Populate dock_ports for hubs that are part of a dock/composite product.
+    // Build dock_ports dynamically from USB hub downstream ports.
+    // Must be two-pass to avoid borrow conflicts between immutable lookup and mutable devices.
+    {
+        let devices_by_id: HashMap<Uuid, &UsbDevice> = devices.iter().map(|d| (d.id, d)).collect();
+        let mut dock_ports_map: HashMap<Uuid, Vec<skirr_core::DockPort>> = HashMap::new();
+
+        for dev in &devices {
+            if !dev.is_hub {
+                continue;
+            }
+            let info = match &dev.hub_info {
+                Some(i) => i,
+                None => continue,
+            };
+            let mut dock_ports: Vec<skirr_core::DockPort> = Vec::new();
+            let mut port_idx: u8 = 1;
+
+            if let Some(kids) = children.get(&dev.id) {
+                let mut sorted_kids: Vec<&UsbDevice> = kids
+                    .iter()
+                    .filter_map(|kid_id| devices_by_id.get(kid_id).copied())
+                    .collect();
+                sorted_kids.sort_by_key(|k| k.port_number.unwrap_or(0));
+
+                for kid in &sorted_kids {
+                    if let Some(pn) = kid.port_number {
+                        let port_type = if kid.vendor_id == 0x0BDA && kid.product_id == 0x8153 {
+                            skirr_core::DockPortType::Ethernet
+                        } else {
+                            match kid.device_class {
+                                skirr_core::UsbClass::Hub => skirr_core::DockPortType::UsbC,
+                                skirr_core::UsbClass::MassStorage => skirr_core::DockPortType::SdCard,
+                                skirr_core::UsbClass::Audio => skirr_core::DockPortType::AudioJack35,
+                                _ => skirr_core::DockPortType::UsbA,
+                            }
+                        };
+                        dock_ports.push(skirr_core::DockPort {
+                            index: port_idx,
+                            port_type,
+                            usb_hub_port: Some(pn),
+                            connected_device_id: Some(kid.id),
+                            label: port_type.label().to_string(),
+                        });
+                        port_idx += 1;
+                    }
+                }
+
+                for pn in 1..=info.port_count {
+                    if !kids.iter().any(|kid_id| {
+                        devices_by_id
+                            .get(kid_id)
+                            .map(|k| k.port_number == Some(pn))
+                            .unwrap_or(false)
+                    }) {
+                        dock_ports.push(skirr_core::DockPort {
+                            index: port_idx,
+                            port_type: skirr_core::DockPortType::UsbA,
+                            usb_hub_port: Some(pn),
+                            connected_device_id: None,
+                            label: "free".to_string(),
+                        });
+                        port_idx += 1;
+                    }
+                }
+            }
+
+            if !dock_ports.is_empty() {
+                dock_ports_map.insert(dev.id, dock_ports);
+            }
+        }
+
+        for dev in &mut devices {
+            if let Some(dock_ports) = dock_ports_map.remove(&dev.id) {
+                if let Some(ref mut info) = dev.hub_info {
+                    info.dock_ports = dock_ports;
+                }
             }
         }
     }

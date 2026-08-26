@@ -246,31 +246,10 @@ async function loadTopology() {
       html += `<div class="platform-limits">${esc(p.name)} limits — Hops: ${p.max_hops}, Hubs: ${p.max_hubs}, Tiers: ${p.max_tiers}</div>`;
     }
 
-    // Main tree: render from HOST root.
+    // Main tree: render from HOST root (includes Thunderbolt/USB4 routers).
     html += `<div class="topology-tree">`;
     html += renderNode(view.root, "", true);
     html += `</div>`;
-
-    // Thunderbolt / USB4 section.
-    if (view.tb_routers?.length) {
-      html += `<h3 class="internal-h">Thunderbolt / USB4</h3><ul class="tb-routers">${
-        view.tb_routers
-          .map((r) => {
-            const kind = r.is_usb4 ? "USB4" : "Thunderbolt";
-            const gen = r.generation ? ` ${r.generation}` : "";
-            const sec = r.security_level ? ` · security ${r.security_level}` : "";
-            const nvm = r.nvm_version ? ` · NVM ${esc(r.nvm_version)}` : "";
-            const recs = (r.receptacles || [])
-              .map((rec) => `<small>Receptacle ${esc(rec.id ?? "?")}: ${esc(rec.status ?? "status unknown")}${
-                rec.current_speed ? ` (${esc(rec.current_speed)})` : ""}</small>`)
-              .join("<br/>");
-            return `<li>${esc(r.name)} — <span class="ids">${esc(r.vendor_name ?? "")}</span>`
-              + ` · ${kind}${gen}${sec}${nvm} · depth ${r.depth}`
-              + (r.status ? ` · ${esc(r.status)}` : "")
-              + (recs ? `<br/>${recs}` : "") + "</li>";
-          })
-          .join("")}</ul>`;
-    }
 
     if (!html.trim()) {
       html += "<p class='free'>(nothing attached)</p>";

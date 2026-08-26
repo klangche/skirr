@@ -378,6 +378,12 @@ pub struct HubInfo {
     pub tt_type: HubTTType,
     pub hub_speed: UsbSpeed,
     pub ports: Vec<HubPort>,
+    /// Physical port layout of the product containing this hub. Populated
+    /// from a dock database when the product is a known dock/composite device.
+    /// USB ports reference their hub downstream port via `usb_hub_port`;
+    /// non-USB ports (HDMI, Ethernet, …) have `usb_hub_port = None`.
+    #[serde(default)]
+    pub dock_ports: Vec<DockPort>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +398,62 @@ pub enum HubTTType {
     Unknown,
     SingleTT,
     MultiTT,
+}
+
+/// Physical port type on a dock or hub product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DockPortType {
+    UsbA,
+    UsbC,
+    Hdmi,
+    DisplayPort,
+    MiniDisplayPort,
+    Ethernet,
+    SdCard,
+    MicroSdCard,
+    AudioJack35,
+    Vga,
+    Dvi,
+    PowerIn,
+    Other,
+}
+
+impl DockPortType {
+    pub fn label(self) -> &'static str {
+        match self {
+            DockPortType::UsbA => "USB-A",
+            DockPortType::UsbC => "USB-C",
+            DockPortType::Hdmi => "HDMI",
+            DockPortType::DisplayPort => "DisplayPort",
+            DockPortType::MiniDisplayPort => "Mini DP",
+            DockPortType::Ethernet => "Ethernet",
+            DockPortType::SdCard => "SD",
+            DockPortType::MicroSdCard => "microSD",
+            DockPortType::AudioJack35 => "3.5mm",
+            DockPortType::Vga => "VGA",
+            DockPortType::Dvi => "DVI",
+            DockPortType::PowerIn => "Power",
+            DockPortType::Other => "port",
+        }
+    }
+}
+
+/// One physical port on a dock or composite product. Non-USB ports (HDMI,
+/// Ethernet, …) appear alongside USB ports so the complete physical layout
+/// is visible in the topology tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockPort {
+    /// 1-based port index on the physical product (front-to-back, left-to-right
+    /// or as documented by the manufacturer).
+    pub index: u8,
+    pub port_type: DockPortType,
+    /// USB hub downstream port number if this port is driven by a USB hub
+    /// inside the dock. `None` for non-USB ports (HDMI, DP, power, …).
+    pub usb_hub_port: Option<u8>,
+    /// Device currently plugged into this port (if any).
+    pub connected_device_id: Option<Uuid>,
+    /// Human label, e.g. "HDMI 1", "USB-A 3", "SD".
+    pub label: String,
 }
 
 /// Hub port information

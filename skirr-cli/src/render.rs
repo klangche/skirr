@@ -92,7 +92,7 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     let by_parent = children_by_parent(topo);
 
     // ------------------------------------------------------------------
-    // INTERNAL: controllers, root hubs, integrated devices.
+    // INTERNAL: controllers, root hubs, integrated devices, Thunderbolt/USB4.
     // ------------------------------------------------------------------
     let _ = writeln!(out, "{}", "INTERNAL".bold());
     for hc in &topo.host_controllers {
@@ -117,6 +117,40 @@ pub fn render_tree(topo: &SystemTopology) -> String {
             }
         }
     }
+
+    // Thunderbolt / USB4 routers — shown inline with internal controllers.
+    for router in &topo.thunderbolt_routers {
+        let kind = if router.is_usb4 { "USB4" } else { "Thunderbolt" };
+        let mut line = format!("[{}] {}", router.id, router.name);
+        if let Some(vendor) = &router.vendor_name {
+            let _ = write!(line, " ({vendor})");
+        }
+        let _ = write!(line, " · {kind}");
+        if let Some(gen) = &router.generation {
+            let _ = write!(line, " · {gen:?}");
+        }
+        let _ = write!(line, " · depth {}", router.depth);
+        if let Some(status) = &router.status {
+            let _ = write!(line, " · {status}");
+        }
+        let _ = writeln!(out, "{line}");
+
+        // Show receptacles.
+        for rec in &router.receptacles {
+            let rec_id = rec.id.as_deref().unwrap_or("?");
+            let mut rec_line = format!("  Receptacle {rec_id}: ");
+            if let Some(status) = &rec.status {
+                let _ = write!(rec_line, "{status}");
+            } else {
+                let _ = write!(rec_line, "status unknown");
+            }
+            if let Some(speed) = &rec.current_speed {
+                let _ = write!(rec_line, " ({speed})");
+            }
+            let _ = writeln!(out, "{rec_line}");
+        }
+    }
+
     let _ = writeln!(out);
 
     // ------------------------------------------------------------------
@@ -187,54 +221,6 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     }
     if !any_external {
         let _ = writeln!(out, "(nothing attached)");
-        let _ = writeln!(out);
-    }
-
-    // ------------------------------------------------------------------
-    // THUNDERBOLT / USB4 fabric (Phase 10.1) — separate from USB.
-    // ------------------------------------------------------------------
-    if !topo.thunderbolt_routers.is_empty() {
-        let _ = writeln!(out, "{}", "THUNDERBOLT / USB4".bold());
-        for router in &topo.thunderbolt_routers {
-            let mut line = format!("[{}] {}", router.id, router.name);
-            if let Some(vendor) = &router.vendor_name {
-                let _ = write!(line, " ({vendor})");
-            }
-            let kind = if router.is_usb4 {
-                "USB4"
-            } else {
-                "Thunderbolt"
-            };
-            match router.generation {
-                Some(gen) => {
-                    let _ = write!(line, " · {kind} {:?}", gen);
-                }
-                None => {
-                    let _ = write!(line, " · {kind}");
-                }
-            }
-            if let Some(sec) = router.security_level {
-                let _ = write!(line, " · security {sec:?}");
-            }
-            if let Some(nvm) = &router.nvm_version {
-                let _ = write!(line, " · NVM {nvm}");
-            }
-            let _ = write!(line, " · depth {}", router.depth);
-            if let Some(status) = &router.status {
-                let _ = write!(line, " · {status}");
-            }
-            let _ = writeln!(out, "{line}");
-            for rec in &router.receptacles {
-                let id = rec.id.as_deref().unwrap_or("?");
-                let status = rec.status.as_deref().unwrap_or("status unknown");
-                let speed = rec
-                    .current_speed
-                    .as_deref()
-                    .map(|s| format!(" ({s})"))
-                    .unwrap_or_default();
-                let _ = writeln!(out, "  Receptacle {id}: {status}{speed}");
-            }
-        }
         let _ = writeln!(out);
     }
 
@@ -475,16 +461,84 @@ fn write_chain(
     };
     let branch = if last { "  " } else { "│ " };
     let child_prefix = format!("{prefix}{branch}");
-    for (i, child) in children.iter().enumerate() {
-        let is_last_child = i + 1 == children.len();
-        let glyph = if is_last_child { "└─" } else { "├─" };
-        let port = child
-            .port_number
-            .map(|p| format!("p{p} "))
-            .unwrap_or_default();
-        let _ = write!(out, "{child_prefix}{glyph} {port}");
-        write_node(out, child);
-        write_chain(out, child, by_parent, &child_prefix, is_last_child);
+
+    // If this hub has dock_ports, render the full physical port layout.
+    if let Some(info) = &dev.hub_info {
+        if !info.dock_ports.is_empty() {
+            let total = info.dock_ports.len();
+            for (i, dp) in info.dock_ports.iter().enumerate() {
+                let is_last = i + 1 == total;
+                let glyph = if is_last { "└─" } else { "├─" };
+
+                if let Some(usb_port) = dp.usb_hub_port {
+                    // USB port — find the connected child device.
+                    if let Some(kid) = children.iter().find(|c| c.port_number == Some(usb_port)) {
+                        let _ = write!(out, "{child_prefix}{glyph} ");
+                        write_node(out, kid);
+                        write_chain(out, kid, by_parent, &child_prefix, is_last);
+                    } else {
+                        let _ = writeln!(
+                            out,
+                            "{child_prefix}{glyph} {} — n/a",
+                            dp.label
+                        );
+                    }
+                } else {
+                    // Non-USB port (HDMI, Ethernet, Audio, etc.)
+                    let _ = writeln!(
+                        out,
+                        "{child_prefix}{glyph} {}",
+                        dp.label
+                    );
+                }
+            }
+            // Emit children without port numbers (compound interfaces).
+            for kid in children.iter() {
+                if kid.port_number.is_none() {
+                    let _ = write!(out, "{child_prefix}├─ ");
+                    write_node(out, kid);
+                    write_chain(out, kid, by_parent, &child_prefix, false);
+                }
+            }
+            return;
+        }
+    }
+
+    // Fallback: hub with known port count but no dock_ports.
+    if let Some(port_count) = dev.hub_info.as_ref().map(|h| h.port_count) {
+        for pn in 1..=port_count {
+            let is_last_port = pn == port_count;
+            let glyph = if is_last_port { "└─" } else { "├─" };
+            if let Some(kid) = children.iter().find(|c| c.port_number == Some(pn)) {
+                let _ = write!(out, "{child_prefix}{glyph} p{pn} ");
+                write_node(out, kid);
+                write_chain(out, kid, by_parent, &child_prefix, is_last_port);
+            } else {
+                let _ = writeln!(out, "{child_prefix}{glyph} p{pn} n/a");
+            }
+        }
+        // Emit children without port numbers (compound interfaces).
+        for (i, kid) in children.iter().enumerate() {
+            if kid.port_number.is_none() {
+                let is_last = i + 1 == children.len() && true;
+                let glyph = "├─";
+                let _ = write!(out, "{child_prefix}{glyph} ");
+                write_node(out, kid);
+                write_chain(out, kid, by_parent, &child_prefix, is_last);
+            }
+        }
+    } else {
+        for (i, child) in children.iter().enumerate() {
+            let is_last_child = i + 1 == children.len();
+            let glyph = if is_last_child { "└─" } else { "├─" };
+            let port = child
+                .port_number
+                .map(|p| format!("p{p} "))
+                .unwrap_or_default();
+            let _ = write!(out, "{child_prefix}{glyph} {port}");
+            write_node(out, child);
+            write_chain(out, child, by_parent, &child_prefix, is_last_child);
+        }
     }
 }
 

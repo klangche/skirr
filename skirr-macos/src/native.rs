@@ -425,39 +425,59 @@ mod iokit {
 
     /// The PnP-parent analogue: nearest ancestor that is itself a USB device.
     /// Controllers return `None`, mirroring the Windows PCI-root behaviour.
+    ///
+    /// On Apple Silicon the IOService tree inserts intermediate hub-controller
+    /// nodes (e.g. `AppleUSB20Hub`) between `IOUSBHostDevice` entries.  These
+    /// lack `idVendor`/`idProduct`, so we must walk up through them to reach
+    /// the actual parent USB device.
     fn parent_usb_instance(entry: IoObject) -> Option<String> {
         let plane = CString::new("IOService").ok()?;
-        let mut parent: IoObject = 0;
-        let kr = unsafe { IORegistryEntryGetParentEntry(entry, plane.as_ptr(), &mut parent) };
-        if kr != KERN_SUCCESS || parent == 0 {
-            return None;
-        }
-        let mut props: *mut c_void = std::ptr::null_mut();
-        let ok = unsafe {
-            IORegistryEntryCreateCFProperties(parent, &mut props, std::ptr::null_mut(), 0)
-        } == KERN_SUCCESS
-            && !props.is_null();
-        let result = if !ok {
-            None
-        } else {
-            let dict = Dict(props);
-            let vid = dict
-                .number::<i64>("idVendor")
-                .and_then(|v| u16::try_from(v).ok());
-            let pid = dict
-                .number::<i64>("idProduct")
-                .and_then(|v| u16::try_from(v).ok());
-            let loc = dict.number::<u32>("locationID").unwrap_or(0);
-            match (vid, pid) {
-                (Some(v), Some(p)) => Some(make_instance(v, p, loc)),
-                _ => None,
+        let mut cursor = entry;
+        // Walk up through the IOService tree, skipping intermediate objects
+        // (hub controllers, port objects) that lack USB vendor/product ids.
+        for _ in 0..8 {
+            let mut parent: IoObject = 0;
+            let kr =
+                unsafe { IORegistryEntryGetParentEntry(cursor, plane.as_ptr(), &mut parent) };
+            if kr != KERN_SUCCESS || parent == 0 {
+                return None;
             }
-        };
-        if !props.is_null() {
-            unsafe { CFRelease(props) };
+            let mut props: *mut c_void = std::ptr::null_mut();
+            let ok = unsafe {
+                IORegistryEntryCreateCFProperties(parent, &mut props, std::ptr::null_mut(), 0)
+            } == KERN_SUCCESS
+                && !props.is_null();
+            let result = if !ok {
+                None
+            } else {
+                let dict = Dict(props);
+                let vid = dict
+                    .number::<i64>("idVendor")
+                    .and_then(|v| u16::try_from(v).ok());
+                let pid = dict
+                    .number::<i64>("idProduct")
+                    .and_then(|v| u16::try_from(v).ok());
+                let loc = dict.number::<u32>("locationID").unwrap_or(0);
+                match (vid, pid) {
+                    (Some(v), Some(p)) => Some(make_instance(v, p, loc)),
+                    _ => None,
+                }
+            };
+            let found = result.is_some();
+            if !props.is_null() {
+                unsafe { CFRelease(props) };
+            }
+            if found {
+                unsafe { IOObjectRelease(parent) };
+                return result;
+            }
+            // Intermediate node (e.g. AppleUSB20Hub) — keep walking up.
+            if cursor != entry {
+                unsafe { IOObjectRelease(cursor) };
+            }
+            cursor = parent;
         }
-        unsafe { IOObjectRelease(parent) };
-        result
+        None
     }
 
     /// Names of present Type-C-related services (`AppleTypeCCRU` family).

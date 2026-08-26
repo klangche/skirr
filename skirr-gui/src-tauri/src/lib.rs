@@ -369,35 +369,86 @@ fn build_tree_node(
 ) -> TreeNode {
     let mut children: Vec<TreeNode> = Vec::new();
 
-    // If this is a hub with known port count, emit ordered port slots.
+    // If this hub has dock_ports, render the full physical port layout.
     if let Some(info) = &dev.hub_info {
-        let port_count = info.port_count;
-        let direct_kids = by_parent.get(&Some(dev.id));
-        for pn in 1..=port_count {
-            if let Some(kid) = direct_kids.and_then(|kids| {
-                kids.iter().find(|k| k.port_number == Some(pn))
-            }) {
-                children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
-            } else {
-                children.push(TreeNode {
-                    label: "n/a".to_string(),
-                    meta: None,
-                    vid: None,
-                    pid: None,
-                    speed_mbps: None,
-                    bold: false,
-                    hub_ports: None,
-                    dock_family: None,
-                    display: None,
-                    children: Vec::new(),
-                });
+        if !info.dock_ports.is_empty() {
+            let direct_kids = by_parent.get(&Some(dev.id));
+            for dp in &info.dock_ports {
+                if let Some(usb_port) = dp.usb_hub_port {
+                    // USB port — find the connected child device.
+                    if let Some(kid) = direct_kids.and_then(|kids| {
+                        kids.iter().find(|k| k.port_number == Some(usb_port))
+                    }) {
+                        children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                    } else {
+                        // Free USB port.
+                        children.push(TreeNode {
+                            label: format!("{} — n/a", dp.label),
+                            meta: None,
+                            vid: None,
+                            pid: None,
+                            speed_mbps: None,
+                            bold: false,
+                            hub_ports: None,
+                            dock_family: None,
+                            display: None,
+                            children: Vec::new(),
+                        });
+                    }
+                } else {
+                    // Non-USB port (HDMI, Ethernet, Audio, etc.)
+                    children.push(TreeNode {
+                        label: dp.label.clone(),
+                        meta: Some(dp.port_type.label().to_string()),
+                        vid: None,
+                        pid: None,
+                        speed_mbps: None,
+                        bold: false,
+                        hub_ports: None,
+                        dock_family: None,
+                        display: None,
+                        children: Vec::new(),
+                    });
+                }
             }
-        }
-        // Also emit children that don't have a port_number (compound interfaces).
-        if let Some(kids) = direct_kids {
-            for kid in kids {
-                if kid.port_number.is_none() {
+            // Emit children without port numbers (compound interfaces).
+            if let Some(kids) = direct_kids {
+                for kid in kids {
+                    if kid.port_number.is_none() {
+                        children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                    }
+                }
+            }
+        } else {
+            // Hub without dock_ports — fallback to port-count expansion.
+            let port_count = info.port_count;
+            let direct_kids = by_parent.get(&Some(dev.id));
+            for pn in 1..=port_count {
+                if let Some(kid) = direct_kids.and_then(|kids| {
+                    kids.iter().find(|k| k.port_number == Some(pn))
+                }) {
                     children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                } else {
+                    children.push(TreeNode {
+                        label: "n/a".to_string(),
+                        meta: None,
+                        vid: None,
+                        pid: None,
+                        speed_mbps: None,
+                        bold: false,
+                        hub_ports: None,
+                        dock_family: None,
+                        display: None,
+                        children: Vec::new(),
+                    });
+                }
+            }
+            // Emit children without port numbers (compound interfaces).
+            if let Some(kids) = direct_kids {
+                for kid in kids {
+                    if kid.port_number.is_none() {
+                        children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                    }
                 }
             }
         }
@@ -655,13 +706,52 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
             .unwrap_or(0)
     });
 
-    // Merge internal + ports under HOST.
+    // Merge internal + ports + Thunderbolt/USB4 under HOST.
     let mut host_children: Vec<TreeNode> = Vec::new();
     for n in internal_nodes {
         host_children.push(n);
     }
     for n in port_nodes {
         host_children.push(n);
+    }
+
+    // Thunderbolt / USB4 routers — shown inline as tree nodes.
+    for router in &topo.thunderbolt_routers {
+        let kind = if router.is_usb4 { "USB4" } else { "Thunderbolt" };
+        let mut label = format!("{} ({})", router.name, kind);
+        if let Some(vendor) = &router.vendor_name {
+            label = format!("{} — {} · {kind}", router.name, vendor);
+        }
+        let mut tb_children: Vec<TreeNode> = Vec::new();
+        for rec in &router.receptacles {
+            let rec_id = rec.id.as_deref().unwrap_or("?");
+            let status = rec.status.as_deref().unwrap_or("status unknown");
+            let speed = rec.current_speed.as_deref().unwrap_or("");
+            tb_children.push(TreeNode {
+                label: format!("Receptacle {rec_id}: {status}{speed}"),
+                meta: None,
+                vid: None,
+                pid: None,
+                speed_mbps: None,
+                bold: false,
+                hub_ports: None,
+                dock_family: None,
+                display: None,
+                children: Vec::new(),
+            });
+        }
+        host_children.push(TreeNode {
+            label,
+            meta: Some(format!("depth {}", router.depth)),
+            vid: None,
+            pid: None,
+            speed_mbps: None,
+            bold: false,
+            hub_ports: None,
+            dock_family: None,
+            display: None,
+            children: tb_children,
+        });
     }
 
     let root = TreeNode {
@@ -1406,6 +1496,7 @@ mod tests {
             tt_type: skirr_core::HubTTType::SingleTT,
             hub_speed: UsbSpeed::SuperSpeed,
             ports: Vec::new(),
+            dock_ports: Vec::new(),
         });
         topo.devices[1].serial_number = Some("SN-123".into());
 
