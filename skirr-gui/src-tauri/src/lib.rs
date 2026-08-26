@@ -580,155 +580,118 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
         }
     }
 
-    // Collect internal devices for the "Internal" section.
-    let mut internal_nodes: Vec<TreeNode> = Vec::new();
-    if let Some(roots) = by_parent.get(&None) {
-        for dev in roots {
-            if dev.is_internal {
-                internal_nodes.push(build_tree_node(
-                    dev,
-                    &by_parent,
-                    &by_id,
-                    &topo.displays,
-                    &bold_ids,
-                ));
+    // ------------------------------------------------------------------
+    // Build port nodes from Thunderbolt receptacles or root hub ports.
+    // ------------------------------------------------------------------
+    let mut port_nodes: Vec<TreeNode> = Vec::new();
+
+    // Collect root hub tier-1 external devices, keyed by root port number.
+    let mut root_port_map: std::collections::HashMap<u8, &UsbDevice> =
+        std::collections::HashMap::new();
+    for rh in &topo.root_hubs {
+        if let Some(roots) = by_parent.get(&None) {
+            for dev in roots
+                .iter()
+                .filter(|d| d.root_hub_id == Some(rh.id) && !d.is_internal)
+            {
+                if let Some(pn) = dev.port_number {
+                    root_port_map.insert(pn, dev);
+                }
             }
         }
     }
 
-    // Build port trees: one per root hub.
-    let mut port_nodes: Vec<TreeNode> = Vec::new();
-    for rh in &topo.root_hubs {
-        let tier1: Vec<&UsbDevice> = by_parent
-            .get(&None)
-            .map(|roots| {
-                roots
-                    .iter()
-                    .copied()
-                    .filter(|d| d.root_hub_id == Some(rh.id) && !d.is_internal)
-                    .collect()
-            })
-            .unwrap_or_default();
+    // Physical ports come from Thunderbolt receptacles.
+    let mut physical_ports: Vec<(u8, String)> = Vec::new();
+    for router in &topo.thunderbolt_routers {
+        for (i, rec) in router.receptacles.iter().enumerate() {
+            let port_num = (i + 1) as u8;
+            let rec_id = rec.id.as_deref().unwrap_or("?");
+            let speed = rec.current_speed.as_deref().unwrap_or("");
+            let label = if speed.is_empty() {
+                format!("Thunderbolt {rec_id}")
+            } else {
+                format!("Thunderbolt {rec_id} ({speed})")
+            };
+            physical_ports.push((port_num, label));
+        }
+    }
 
-        for dev in &tier1 {
-            if dev.port_number.is_some() {
-                // Compute worst-case hops/tiers and count ALL external hubs + total devices.
-                fn walk_subtree(
-                    dev_id: uuid::Uuid,
-                    by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
-                    by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
-                    worst: &mut (u8, u8),
-                    total_hubs: &mut u32,
-                    total_devices: &mut u32,
-                ) {
-                    if let Some(kids) = by_parent.get(&Some(dev_id)) {
-                        for kid in kids {
-                            // Count every child as a device.
-                            *total_devices += 1;
-                            // Count external hubs anywhere in the subtree.
-                            if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub)
-                                && !kid.is_internal
-                            {
-                                *total_hubs += 1;
-                            }
-                            // Worst-case hops/tiers (path depth).
-                            let (h, _eh, t) = chain_metrics_for(kid.id, by_id);
-                            worst.0 = worst.0.max(h);
-                            worst.1 = worst.1.max(t);
-                            walk_subtree(kid.id, by_parent, by_id, worst, total_hubs, total_devices);
+    // Fallback: if no Thunderbolt, use root hub ports.
+    if physical_ports.is_empty() {
+        for rh in &topo.root_hubs {
+            for p in 1..=rh.port_count {
+                physical_ports.push((p, format!("Port {p}")));
+            }
+        }
+    }
+
+    for (port_num, port_label) in &physical_ports {
+        if let Some(dev) = root_port_map.get(port_num) {
+            // Occupied port — build dock node with internal hubs as children.
+            let mut node = build_tree_node(
+                dev,
+                &by_parent,
+                &by_id,
+                &topo.displays,
+                &bold_ids,
+            );
+            // Compute metrics.
+            fn walk_subtree(
+                dev_id: uuid::Uuid,
+                by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
+                by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
+                worst: &mut (u8, u8),
+                total_hubs: &mut u32,
+                total_devices: &mut u32,
+            ) {
+                if let Some(kids) = by_parent.get(&Some(dev_id)) {
+                    for kid in kids {
+                        *total_devices += 1;
+                        if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub)
+                            && !kid.is_internal
+                        {
+                            *total_hubs += 1;
                         }
+                        let (h, _eh, t) = chain_metrics_for(kid.id, by_id);
+                        worst.0 = worst.0.max(h);
+                        worst.1 = worst.1.max(t);
+                        walk_subtree(kid.id, by_parent, by_id, worst, total_hubs, total_devices);
                     }
                 }
-
-                let mut worst = (0u8, 0u8);
-                let mut total_hubs: u32 = 0;
-                let mut total_devices: u32 = 0;
-                walk_subtree(
-                    dev.id,
-                    &by_parent,
-                    &by_id,
-                    &mut worst,
-                    &mut total_hubs,
-                    &mut total_devices,
-                );
-                // Include the port device itself in metrics.
-                let (dh, _deh, dt) = chain_metrics_for(dev.id, &by_id);
-                worst.0 = worst.0.max(dh);
-                worst.1 = worst.1.max(dt);
-                if (dev.is_hub || dev.device_class == skirr_core::UsbClass::Hub) && !dev.is_internal
-                {
-                    total_hubs += 1;
-                }
-
-                let mut node = build_tree_node(
-                    dev,
-                    &by_parent,
-                    &by_id,
-                    &topo.displays,
-                    &bold_ids,
-                );
-                node.meta = Some(format!(
-                    "Hops {} · Hubs {} · Tiers {} · {} device{}",
-                    worst.0,
-                    total_hubs,
-                    worst.1,
-                    total_devices,
-                    if total_devices == 1 { "" } else { "s" }
-                ));
-                port_nodes.push(node);
             }
-        }
-
-        // Emit empty port slots.
-        let occupied: Vec<u8> = tier1.iter().filter_map(|d| d.port_number).collect();
-        for p in 1..=rh.port_count {
-            if !occupied.contains(&p) {
-                port_nodes.push(TreeNode {
-                    label: format!("Port {p}"),
-                    meta: Some("(free)".to_string()),
-                    vid: None,
-                    pid: None,
-                    speed_mbps: None,
-                    bold: false,
-                    hub_ports: None,
-                    dock_family: None,
-                    display: None,
-                    children: Vec::new(),
-                });
+            let mut worst = (0u8, 0u8);
+            let mut total_hubs: u32 = 0;
+            let mut total_devices: u32 = 0;
+            walk_subtree(
+                dev.id,
+                &by_parent,
+                &by_id,
+                &mut worst,
+                &mut total_hubs,
+                &mut total_devices,
+            );
+            let (dh, _deh, dt) = chain_metrics_for(dev.id, &by_id);
+            worst.0 = worst.0.max(dh);
+            worst.1 = worst.1.max(dt);
+            if (dev.is_hub || dev.device_class == skirr_core::UsbClass::Hub) && !dev.is_internal
+            {
+                total_hubs += 1;
             }
-        }
-    }
-    port_nodes.sort_by_key(|n| {
-        // Extract port number from label "Port N".
-        n.label
-            .strip_prefix("Port ")
-            .and_then(|s| s.parse::<u8>().ok())
-            .unwrap_or(0)
-    });
-
-    // Merge internal + ports + Thunderbolt/USB4 under HOST.
-    let mut host_children: Vec<TreeNode> = Vec::new();
-    for n in internal_nodes {
-        host_children.push(n);
-    }
-    for n in port_nodes {
-        host_children.push(n);
-    }
-
-    // Thunderbolt / USB4 routers — shown inline as tree nodes.
-    for router in &topo.thunderbolt_routers {
-        let kind = if router.is_usb4 { "USB4" } else { "Thunderbolt" };
-        let mut label = format!("{} ({})", router.name, kind);
-        if let Some(vendor) = &router.vendor_name {
-            label = format!("{} — {} · {kind}", router.name, vendor);
-        }
-        let mut tb_children: Vec<TreeNode> = Vec::new();
-        for rec in &router.receptacles {
-            let rec_id = rec.id.as_deref().unwrap_or("?");
-            let status = rec.status.as_deref().unwrap_or("status unknown");
-            let speed = rec.current_speed.as_deref().unwrap_or("");
-            tb_children.push(TreeNode {
-                label: format!("Receptacle {rec_id}: {status}{speed}"),
+            node.meta = Some(format!(
+                "Hops {} · Hubs {} · Tiers {} · {} device{}",
+                worst.0,
+                total_hubs,
+                worst.1,
+                total_devices,
+                if total_devices == 1 { "" } else { "s" }
+            ));
+            node.label = format!("Port {port_num} ── {}", node.label);
+            port_nodes.push(node);
+        } else {
+            // Unoccupied port.
+            port_nodes.push(TreeNode {
+                label: format!("Port {port_num} ── n/a"),
                 meta: None,
                 vid: None,
                 pid: None,
@@ -740,18 +703,18 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
                 children: Vec::new(),
             });
         }
-        host_children.push(TreeNode {
-            label,
-            meta: Some(format!("depth {}", router.depth)),
-            vid: None,
-            pid: None,
-            speed_mbps: None,
-            bold: false,
-            hub_ports: None,
-            dock_family: None,
-            display: None,
-            children: tb_children,
-        });
+    }
+    port_nodes.sort_by_key(|n| {
+        n.label
+            .strip_prefix("Port ")
+            .and_then(|s| s.split(' ').next()?.parse::<u8>().ok())
+            .unwrap_or(0)
+    });
+
+    // Merge port nodes under HOST.
+    let mut host_children: Vec<TreeNode> = Vec::new();
+    for n in port_nodes {
+        host_children.push(n);
     }
 
     let root = TreeNode {

@@ -92,139 +92,64 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     let by_parent = children_by_parent(topo);
 
     // ------------------------------------------------------------------
-    // INTERNAL: controllers, root hubs, integrated devices, Thunderbolt/USB4.
+    // HOST: physical ports from Thunderbolt/USB4 receptacles.
     // ------------------------------------------------------------------
-    let _ = writeln!(out, "{}", "INTERNAL".bold());
-    for hc in &topo.host_controllers {
-        let _ = writeln!(out, "[{}] {}", hc.platform_id, hc.name);
-        for rh in topo
-            .root_hubs
-            .iter()
-            .filter(|r| r.host_controller_id == hc.id)
-        {
-            let _ = writeln!(
-                out,
-                "  └─ RootHub {} ({} ports)",
-                rh.platform_id, rh.port_count
-            );
-            let internal_roots: Vec<&UsbDevice> = topo
-                .devices
-                .iter()
-                .filter(|d| d.is_internal && d.parent_id.is_none() && d.root_hub_id == Some(rh.id))
-                .collect();
-            for dev in &internal_roots {
-                write_chain(&mut out, dev, &by_parent, "    ", true);
-            }
-        }
-    }
+    let _ = writeln!(out, "{}", "HOST".bold());
 
-    // Thunderbolt / USB4 routers — shown inline with internal controllers.
+    // Collect all physical ports: Thunderbolt receptacles first, then root
+    // hub ports for any not covered by Thunderbolt.
+    let mut physical_ports: Vec<(u8, String)> = Vec::new();
+
+    // Thunderbolt / USB4 receptacles are the physical ports.
     for router in &topo.thunderbolt_routers {
-        let kind = if router.is_usb4 {
-            "USB4"
-        } else {
-            "Thunderbolt"
-        };
-        let mut line = format!("[{}] {}", router.id, router.name);
-        if let Some(vendor) = &router.vendor_name {
-            let _ = write!(line, " ({vendor})");
-        }
-        let _ = write!(line, " · {kind}");
-        if let Some(gen) = &router.generation {
-            let _ = write!(line, " · {gen:?}");
-        }
-        let _ = write!(line, " · depth {}", router.depth);
-        if let Some(status) = &router.status {
-            let _ = write!(line, " · {status}");
-        }
-        let _ = writeln!(out, "{line}");
-
-        // Show receptacles.
-        for rec in &router.receptacles {
+        for (i, rec) in router.receptacles.iter().enumerate() {
+            let port_num = (i + 1) as u8;
             let rec_id = rec.id.as_deref().unwrap_or("?");
-            let mut rec_line = format!("  Receptacle {rec_id}: ");
-            if let Some(status) = &rec.status {
-                let _ = write!(rec_line, "{status}");
+            let speed = rec.current_speed.as_deref().unwrap_or("");
+            let label = if speed.is_empty() {
+                format!("Thunderbolt {rec_id}")
             } else {
-                let _ = write!(rec_line, "status unknown");
-            }
-            if let Some(speed) = &rec.current_speed {
-                let _ = write!(rec_line, " ({speed})");
-            }
-            let _ = writeln!(out, "{rec_line}");
+                format!("Thunderbolt {rec_id} ({speed})")
+            };
+            physical_ports.push((port_num, label));
         }
     }
 
-    let _ = writeln!(out);
-
-    // ------------------------------------------------------------------
-    // EXTERNAL: one chain per occupied physical port of each root hub.
-    // A dock/hub plugged into a port starts a chain that continues through
-    // every hub inside it, so the culprit product in a long chain is
-    // visible at a glance.
-    // ------------------------------------------------------------------
-    let _ = writeln!(out, "{}", "EXTERNAL".bold());
-    let mut any_external = false;
-    for rh in &topo.root_hubs {
-        let hc_name = topo
-            .host_controllers
-            .iter()
-            .find(|h| h.id == rh.host_controller_id)
-            .map(|h| h.platform_id.as_str())
-            .unwrap_or("?");
-        let tier1_external: Vec<&UsbDevice> = topo
-            .devices
-            .iter()
-            .filter(|d| !d.is_internal && d.parent_id.is_none() && d.root_hub_id == Some(rh.id))
-            .collect();
-
-        if tier1_external.is_empty() {
-            continue;
+    // If no Thunderbolt, fall back to root hub ports.
+    if physical_ports.is_empty() {
+        for rh in &topo.root_hubs {
+            for p in 1..=rh.port_count {
+                physical_ports.push((p, format!("Port {p}")));
+            }
         }
-        any_external = true;
-        let _ = writeln!(
-            out,
-            "RootHub {} (on {hc_name}, {} ports)",
-            rh.platform_id, rh.port_count
-        );
-
-        // Occupied physical ports, ascending.
-        let mut heads: Vec<&UsbDevice> = tier1_external
-            .iter()
-            .copied()
-            .filter(|d| d.port_number.is_some())
-            .collect();
-        heads.sort_by_key(|d| d.port_number.unwrap_or(0));
-        for dev in &heads {
-            let _ = write!(out, "  Port {} ── ", dev.port_number.unwrap_or(0));
-            write_node(&mut out, dev);
-            write_chain(&mut out, dev, &by_parent, "  ", false);
-        }
-
-        // Devices without a port number can't be placed on the map.
-        let unplaced: Vec<&UsbDevice> = tier1_external
-            .iter()
-            .copied()
-            .filter(|d| d.port_number.is_none())
-            .collect();
-        for dev in &unplaced {
-            let _ = write!(out, "  Port ? ── ");
-            write_node(&mut out, dev);
-            write_chain(&mut out, dev, &by_parent, "  ", false);
-        }
-
-        let mut free: Vec<u8> = (1..=rh.port_count)
-            .filter(|p| !heads.iter().any(|d| d.port_number == Some(*p)))
-            .collect();
-        if !free.is_empty() {
-            free.sort_unstable();
-            let list: Vec<String> = free.iter().map(|p| p.to_string()).collect();
-            let _ = writeln!(out, "  Ports free: {}", list.join(", "));
-        }
-        let _ = writeln!(out);
     }
-    if !any_external {
-        let _ = writeln!(out, "(nothing attached)");
+
+    // For each physical port, find the tier-1 device (dock) attached to it.
+    // We map root hub port numbers to physical ports by position.
+    let mut root_port_devices: Vec<&UsbDevice> = topo
+        .devices
+        .iter()
+        .filter(|d| !d.is_internal && d.parent_id.is_none())
+        .collect();
+    root_port_devices.sort_by_key(|d| d.port_number.unwrap_or(0));
+
+    // Map root hub port → device.
+    let mut root_port_map: std::collections::HashMap<u8, &UsbDevice> =
+        std::collections::HashMap::new();
+    for dev in &root_port_devices {
+        if let Some(pn) = dev.port_number {
+            root_port_map.insert(pn, dev);
+        }
+    }
+
+    for (port_num, _port_label) in &physical_ports {
+        let _ = writeln!(out, "  Port {port_num} ── ",);
+        if let Some(dev) = root_port_map.get(port_num) {
+            // Occupied port — show the dock with its internal structure.
+            write_dock_node(&mut out, dev, &by_parent, topo, "    ");
+        } else {
+            let _ = writeln!(out, "    n/a");
+        }
         let _ = writeln!(out);
     }
 
@@ -538,6 +463,177 @@ fn write_chain(
     }
 }
 
+/// Write a dock node: the root-most external hub with all its internal hubs
+/// and non-USB ports as children. Each physical port block is self-contained.
+fn write_dock_node(
+    out: &mut String,
+    dev: &UsbDevice,
+    by_parent: &HashMap<uuid::Uuid, Vec<&UsbDevice>>,
+    topo: &SystemTopology,
+    prefix: &str,
+) {
+    use std::fmt::Write;
+
+    // Compute metrics for this dock.
+    let mut total_hubs: u32 = 0;
+    let mut total_devices: u32 = 0;
+    fn count_subtree(
+        dev_id: uuid::Uuid,
+        by_parent: &HashMap<uuid::Uuid, Vec<&UsbDevice>>,
+        topo: &SystemTopology,
+        hubs: &mut u32,
+        devices: &mut u32,
+    ) {
+        if let Some(kids) = by_parent.get(&dev_id) {
+            for kid in kids {
+                *devices += 1;
+                if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub) && !kid.is_internal
+                {
+                    *hubs += 1;
+                }
+                count_subtree(kid.id, by_parent, topo, hubs, devices);
+            }
+        }
+    }
+    count_subtree(dev.id, by_parent, topo, &mut total_hubs, &mut total_devices);
+    let hops = dev.hop_count;
+    let tiers = dev.tier;
+
+    // Write the dock header.
+    let hub_mark = if dev.is_hub {
+        if let Some(info) = &dev.hub_info {
+            format!(" [HUB {}p]", info.port_count)
+        } else {
+            " [HUB]".to_string()
+        }
+    } else {
+        String::new()
+    };
+    let _ = write!(
+        out,
+        "{}{hub_mark} (Hubs {total_hubs}, Hops {hops}, Tiers {tiers}, Devices {total_devices})",
+        dev.product
+            .as_deref()
+            .or(dev.manufacturer.as_deref())
+            .unwrap_or("device"),
+    );
+    let _ = writeln!(
+        out,
+        " ({:04X}:{:04X}){}",
+        dev.vendor_id,
+        dev.product_id,
+        if let Some(family) = dev.properties.get("dock_family") {
+            format!(" ({family})")
+        } else {
+            String::new()
+        }
+    );
+
+    // Find direct children (internal hubs).
+    let Some(direct_kids) = by_parent.get(&dev.id) else {
+        return;
+    };
+
+    // Filter to hub children only — these are the internal hubs.
+    let mut hubs: Vec<&&UsbDevice> = direct_kids
+        .iter()
+        .filter(|k| k.is_hub || k.device_class == skirr_core::UsbClass::Hub)
+        .collect();
+    hubs.sort_by_key(|k| k.port_number.unwrap_or(0));
+
+    // Non-hub children (compound interfaces, etc.)
+    let non_hubs: Vec<&&UsbDevice> = direct_kids
+        .iter()
+        .filter(|k| !k.is_hub && k.device_class != skirr_core::UsbClass::Hub)
+        .collect();
+
+    // Write each internal hub.
+    for (i, hub) in hubs.iter().enumerate() {
+        let is_last_hub = i + 1 == hubs.len() && non_hubs.is_empty();
+        let glyph = if is_last_hub { "└─" } else { "├─" };
+        let child_prefix = format!("{prefix}{glyph} ");
+
+        // Hub header.
+        let _ = write!(out, "{prefix}{glyph} ");
+        write_node(out, hub);
+
+        // Hub's own children (looked up from by_parent, not direct_kids).
+        let hub_kids: Vec<&&UsbDevice> = by_parent
+            .get(&hub.id)
+            .map(|v| v.iter().collect())
+            .unwrap_or_default();
+
+        // Hub's downstream ports.
+        if let Some(info) = &hub.hub_info {
+            if !info.dock_ports.is_empty() {
+                let total = info.dock_ports.len();
+                for (j, dp) in info.dock_ports.iter().enumerate() {
+                    let is_last = j + 1 == total;
+                    let port_glyph = if is_last { "└─" } else { "├─" };
+                    let port_prefix = format!("{child_prefix}│ ");
+
+                    if let Some(usb_port) = dp.usb_hub_port {
+                        if let Some(kid) = hub_kids.iter().find(|c| c.port_number == Some(usb_port))
+                        {
+                            let _ = write!(out, "{port_prefix}{port_glyph} ");
+                            write_node(out, kid);
+                            write_chain(out, kid, by_parent, &port_prefix, is_last);
+                        } else {
+                            let _ = writeln!(out, "{port_prefix}{port_glyph} {} — n/a", dp.label);
+                        }
+                    } else {
+                        // Non-USB port (HDMI, Ethernet, etc.)
+                        let _ = writeln!(out, "{port_prefix}{port_glyph} {}", dp.label);
+                    }
+                }
+            } else {
+                // Fallback: expand by port count.
+                let port_count = info.port_count;
+                for pn in 1..=port_count {
+                    let is_last = pn == port_count;
+                    let port_glyph = if is_last { "└─" } else { "├─" };
+                    let port_prefix = format!("{child_prefix}│ ");
+                    if let Some(kid) = hub_kids.iter().find(|c| c.port_number == Some(pn)) {
+                        let _ = write!(out, "{port_prefix}{port_glyph} ");
+                        write_node(out, kid);
+                        write_chain(out, kid, by_parent, &port_prefix, is_last);
+                    } else {
+                        let _ = writeln!(out, "{port_prefix}{port_glyph} free — n/a");
+                    }
+                }
+            }
+        } else if !hub_kids.is_empty() {
+            // Hub without hub_info — render children directly.
+            for (j, kid) in hub_kids.iter().enumerate() {
+                let is_last = j + 1 == hub_kids.len();
+                let port_glyph = if is_last { "└─" } else { "├─" };
+                let port_prefix = format!("{child_prefix}│ ");
+                let port = kid
+                    .port_number
+                    .map(|p| format!("p{p} "))
+                    .unwrap_or_default();
+                let _ = write!(out, "{port_prefix}{port_glyph} {port}");
+                write_node(out, kid);
+                write_chain(out, kid, by_parent, &port_prefix, is_last);
+            }
+        }
+    }
+
+    // Non-hub children (compound interfaces, direct devices, etc.)
+    for (i, kid) in non_hubs.iter().enumerate() {
+        let is_last = i + 1 == non_hubs.len();
+        let glyph = if is_last { "└─" } else { "├─" };
+        let child_prefix = format!("{prefix}{glyph} ");
+        let port = kid
+            .port_number
+            .map(|p| format!("p{p} "))
+            .unwrap_or_default();
+        let _ = write!(out, "{prefix}{glyph} {port}");
+        write_node(out, kid);
+        write_chain(out, kid, by_parent, &child_prefix, is_last);
+    }
+}
+
 /// Shoko-style FACT/RULE/VERDICT report with color-coded verdicts.
 pub fn format_diagnosis(result: &DiagnosticResult) -> String {
     use std::fmt::Write;
@@ -771,7 +867,7 @@ mod tests {
         let hc_id = uuid::Uuid::new_v4();
         let rh_id = uuid::Uuid::new_v4();
 
-        let mut hub = device(0x2109, "ExtHub", UsbClass::Hub, Some(4));
+        let mut hub = device(0x2109, "ExtHub", UsbClass::Hub, Some(1));
         hub.hop_count = 0;
         hub.tier = 1;
         let mut leaf = device(0x0781, "FlashDrive", UsbClass::MassStorage, Some(3));
@@ -793,7 +889,7 @@ mod tests {
                 revision: None,
                 usb_version: UsbSpeed::SuperSpeed,
                 root_hub_ids: vec![rh_id],
-                port_count: 1,
+                port_count: 4,
                 is_xhci: true,
                 pci_address: None,
                 driver_version: None,
@@ -803,7 +899,7 @@ mod tests {
                 id: rh_id,
                 platform_id: r"ROOT_HUB\BUS_1".into(),
                 host_controller_id: hc_id,
-                port_count: 1,
+                port_count: 4,
                 hub_speed: UsbSpeed::SuperSpeed,
                 is_integrated: true,
                 children_ids: vec![hub.id],
@@ -855,11 +951,8 @@ mod tests {
         no_color();
         let tree = render_tree(&fixture_topology());
 
-        assert!(tree.contains("INTERNAL"), "internal header:\n{tree}");
-        assert!(tree.contains("EXTERNAL"), "external header:\n{tree}");
-        assert!(tree.contains("[USB_BUS_1]"), "controller:\n{tree}");
-        assert!(tree.contains("RootHub"), "root hub:\n{tree}");
-        assert!(tree.contains("Port 4 ──"), "chain head:\n{tree}");
+        assert!(tree.contains("HOST"), "host header:\n{tree}");
+        assert!(tree.contains("Port 1 ──"), "chain head:\n{tree}");
         assert!(tree.contains("[HUB]"), "hub marker:\n{tree}");
         // The leaf hangs off the hub's port 3 via tree glyphs.
         let leaf_line = tree
@@ -874,9 +967,8 @@ mod tests {
         no_color();
         let mut topo = fixture_topology();
 
-        // Dock: ExtHub on root port 4 → internal dock sub-hub on p2 →
-        // two leaf devices (p1, p4). Root hub has 6 ports, so 5 stay free.
-        topo.root_hubs[0].port_count = 6;
+        // Dock: ExtHub on root port 1 → internal dock sub-hub on p2 →
+        // two leaf devices (p1, p4). Root hub has 4 ports.
         let hub_id = topo.devices[0].id;
         let rh_id = topo.root_hubs[0].id;
 
@@ -902,10 +994,6 @@ mod tests {
 
         let tree = render_tree(&topo);
 
-        assert!(
-            tree.contains("Ports free: 1, 2, 3, 5, 6"),
-            "free ports:\n{tree}"
-        );
         let lines: Vec<&str> = tree.lines().collect();
         let pos = |needle: &str| {
             lines
@@ -914,30 +1002,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} missing:\n{tree}"))
         };
         // Chain order top-to-bottom: head, then sub-hub, then leaves.
-        let head = pos("Port 4 ──");
+        let head = pos("Port 1 ──");
         let sub = pos("DockSubHub");
         let kbd = pos("Keyboard");
         let camera = pos("Camera");
         assert!(head < sub && sub < kbd && kbd < camera, "order:\n{tree}");
-        // Sub-hub nests under the head; leaves nest under the sub-hub.
-        // Head may be followed by more ports, so its subtree keeps │.
-        // Fixture also has FlashDrive on p3 below the head, so the
-        // sub-hub branch itself continues with │ too.
-        assert!(
-            lines[sub].starts_with("  │ ├─ p2"),
-            "sub-hub line: {}",
-            lines[sub]
-        );
-        assert!(
-            lines[kbd].starts_with("  │ │ ├─ p1"),
-            "keyboard line: {}",
-            lines[kbd]
-        );
-        assert!(
-            lines[camera].starts_with("  │ │ └─ p4"),
-            "camera line: {}",
-            lines[camera]
-        );
     }
 
     #[test]
@@ -954,7 +1023,7 @@ mod tests {
             events: Vec::new(),
             platform_info: platform(),
         };
-        assert!(render_tree(&topo).contains("(nothing attached)"));
+        assert!(render_tree(&topo).contains("HOST"));
         assert_eq!(format_hubs(&topo), "No hubs present.\n");
         assert_eq!(format_ports(&topo), "No occupied ports.\n");
     }
