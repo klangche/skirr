@@ -181,20 +181,40 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     }
 
     // Render each physical port.
+    let mut rendered_ports: std::collections::HashSet<u8> = std::collections::HashSet::new();
     for &pn in &physical_ports {
-        if seen_ports.contains(&pn) && !anchor_ports.values().any(|v| v.contains(&pn)) {
-            // Already handled via anchor grouping or standalone.
+        if rendered_ports.contains(&pn) {
             continue;
         }
 
         // Check if this port is part of a merged dock group.
-        if let Some((_anchor_id, _ports)) = anchor_ports.iter().find(|(_, v)| v.contains(&pn)) {
-            // Render merged dock: pick the first device as the dock header.
+        if let Some((_anchor_id, group_ports)) = anchor_ports.iter().find(|(_, v)| v.contains(&pn))
+        {
+            // Collect all devices in this group.
+            let grouped_devs: Vec<&UsbDevice> = group_ports
+                .iter()
+                .filter_map(|p| root_port_map.get(p).copied())
+                .collect();
+            let is_actual_dock = grouped_devs.len() > 1
+                || grouped_devs
+                    .iter()
+                    .any(|d| d.properties.contains_key("dock_family"));
+
             let _ = writeln!(out, "  Port {pn} ── ");
-            if let Some(dev) = root_port_map.get(&pn) {
-                write_dock_node(&mut out, dev, &by_parent, "    ");
+            if is_actual_dock && !grouped_devs.is_empty() {
+                // Multi-port dock or dock_family device → use dock format.
+                write_dock_node(&mut out, &grouped_devs, &by_parent, "    ");
+            } else if let Some(dev) = grouped_devs.first() {
+                // Single non-dock device → render directly.
+                let _ = write!(out, "    ");
+                write_node(&mut out, dev);
+                write_chain(&mut out, dev, &by_parent, "    ", true, None);
+            } else {
+                let _ = writeln!(out, "    n/a");
             }
-            // Mark other ports in this group as rendered.
+            for &p in group_ports {
+                rendered_ports.insert(p);
+            }
             let _ = writeln!(out);
             continue;
         }
@@ -202,10 +222,13 @@ pub fn render_tree(topo: &SystemTopology) -> String {
         // Standalone port.
         let _ = writeln!(out, "  Port {pn} ── ");
         if let Some(dev) = root_port_map.get(&pn) {
-            write_dock_node(&mut out, dev, &by_parent, "    ");
+            let _ = write!(out, "    ");
+            write_node(&mut out, dev);
+            write_chain(&mut out, dev, &by_parent, "    ", true, None);
         } else {
             let _ = writeln!(out, "    n/a");
         }
+        rendered_ports.insert(pn);
         let _ = writeln!(out);
     }
 
@@ -370,7 +393,7 @@ pub fn render_tree(topo: &SystemTopology) -> String {
     if !orphans.is_empty() {
         let _ = writeln!(out, "[unattributed]");
         for dev in orphans {
-            write_chain(&mut out, dev, &by_parent, "", true);
+            write_chain(&mut out, dev, &by_parent, "", true, None);
         }
     }
     out
@@ -433,12 +456,15 @@ fn write_node(out: &mut String, dev: &UsbDevice) {
 
 /// Recursive chain writer using proper tree glyphs. `prefix` carries the
 /// ancestor indentation; `last` styles this level's branch end.
+/// `port_label` carries the hierarchical port path for physical port numbering
+/// (e.g. "P1", "P1-1", "P1-1-1"). When `None`, ports use lowercase "pN" format.
 fn write_chain(
     out: &mut String,
     dev: &UsbDevice,
     by_parent: &HashMap<uuid::Uuid, Vec<&UsbDevice>>,
     prefix: &str,
     last: bool,
+    port_label: Option<&str>,
 ) {
     use std::fmt::Write;
     let Some(children) = by_parent.get(&dev.id) else {
@@ -460,7 +486,7 @@ fn write_chain(
                     if let Some(kid) = children.iter().find(|c| c.port_number == Some(usb_port)) {
                         let _ = write!(out, "{child_prefix}{glyph} ");
                         write_node(out, kid);
-                        write_chain(out, kid, by_parent, &child_prefix, is_last);
+                        write_chain(out, kid, by_parent, &child_prefix, is_last, port_label);
                     } else {
                         let _ = writeln!(out, "{child_prefix}{glyph} {} — n/a", dp.label);
                     }
@@ -474,7 +500,7 @@ fn write_chain(
                 if kid.port_number.is_none() {
                     let _ = write!(out, "{child_prefix}├─ ");
                     write_node(out, kid);
-                    write_chain(out, kid, by_parent, &child_prefix, false);
+                    write_chain(out, kid, by_parent, &child_prefix, false, port_label);
                 }
             }
             return;
@@ -486,50 +512,88 @@ fn write_chain(
         for pn in 1..=port_count {
             let is_last_port = pn == port_count;
             let glyph = if is_last_port { "└─" } else { "├─" };
+            let label = match port_label {
+                Some(base) => format!("{base}-{pn}"),
+                None => format!("p{pn}"),
+            };
             if let Some(kid) = children.iter().find(|c| c.port_number == Some(pn)) {
-                let _ = write!(out, "{child_prefix}{glyph} p{pn} ");
+                let _ = write!(out, "{child_prefix}{glyph} {label} ");
                 write_node(out, kid);
-                write_chain(out, kid, by_parent, &child_prefix, is_last_port);
+                write_chain(
+                    out,
+                    kid,
+                    by_parent,
+                    &child_prefix,
+                    is_last_port,
+                    Some(&label),
+                );
             } else {
-                let _ = writeln!(out, "{child_prefix}{glyph} p{pn} n/a");
+                let _ = writeln!(out, "{child_prefix}{glyph} {label} n/a");
             }
         }
         // Emit children without port numbers (compound interfaces).
         for (i, kid) in children.iter().enumerate() {
             if kid.port_number.is_none() {
-                let is_last = i + 1 == children.len() && true;
+                let is_last = i + 1 == children.len();
                 let glyph = "├─";
                 let _ = write!(out, "{child_prefix}{glyph} ");
                 write_node(out, kid);
-                write_chain(out, kid, by_parent, &child_prefix, is_last);
+                write_chain(out, kid, by_parent, &child_prefix, is_last, port_label);
             }
         }
     } else {
         for (i, child) in children.iter().enumerate() {
             let is_last_child = i + 1 == children.len();
             let glyph = if is_last_child { "└─" } else { "├─" };
-            let port = child
-                .port_number
-                .map(|p| format!("p{p} "))
-                .unwrap_or_default();
+            let port = match (port_label, child.port_number) {
+                (Some(base), Some(pn)) => format!("{base}-{pn} "),
+                (None, Some(p)) => format!("p{p} "),
+                _ => String::new(),
+            };
             let _ = write!(out, "{child_prefix}{glyph} {port}");
             write_node(out, child);
-            write_chain(out, child, by_parent, &child_prefix, is_last_child);
+            let child_port_label =
+                port_label.and_then(|base| child.port_number.map(|pn| format!("{base}-{pn}")));
+            let child_port_ref = child_port_label.as_deref();
+            write_chain(
+                out,
+                child,
+                by_parent,
+                &child_prefix,
+                is_last_child,
+                child_port_ref,
+            );
         }
     }
 }
 
-/// Write a dock node: the root-most external hub with all its internal hubs
-/// and non-USB ports as children. Each physical port block is self-contained.
+/// Write a dock node: the root-most external hub(s) with all their internal
+/// hubs and non-USB ports as children. Accepts multiple devices when a dock
+/// spans multiple root hub ports (e.g. USB2 + USB3 hubs on Apple Silicon).
+///
+/// Renders each grouped device as a sub-node with hierarchical port labels:
+/// ```text
+/// DockName (Hubs 5, Hops 3, Tiers 4, Devices 5) (vid:pid)
+///   ├─ P1 [USB2.1] Hub (vid:pid)
+///   │   ├─ P1-1 [USB2.0] Child (vid:pid)
+///   │   │   ├─ P1-1-1 ● Device
+///   │   │   └─ P1-1-2 ○
+///   │   └─ P1-2 ○
+///   └─ P2 [USB3.2] Hub (vid:pid)
+///       ├─ P2-1 ● Device
+///       └─ P2-2 ○
+/// ```
 fn write_dock_node(
     out: &mut String,
-    dev: &UsbDevice,
+    devs: &[&UsbDevice],
     by_parent: &HashMap<uuid::Uuid, Vec<&UsbDevice>>,
     prefix: &str,
 ) {
     use std::fmt::Write;
 
-    // Compute metrics for this dock.
+    let dev = devs[0];
+
+    // Compute metrics across ALL grouped devices (count the devices themselves as hubs).
     let mut total_hubs: u32 = 0;
     let mut total_devices: u32 = 0;
     fn count_subtree(
@@ -549,27 +613,18 @@ fn write_dock_node(
             }
         }
     }
-    count_subtree(dev.id, by_parent, &mut total_hubs, &mut total_devices);
-    let hops = dev.hop_count;
-    let tiers = dev.tier;
+    for d in devs {
+        // Count the grouped device itself as a hub.
+        total_hubs += 1;
+        count_subtree(d.id, by_parent, &mut total_hubs, &mut total_devices);
+    }
+    let hops = devs.iter().map(|d| d.hop_count).max().unwrap_or(0);
+    let tiers = devs.iter().map(|d| d.tier).max().unwrap_or(0);
 
-    // Write the dock header.
-    let hub_mark = if dev.is_hub {
-        if let Some(info) = &dev.hub_info {
-            format!(" [HUB {}p]", info.port_count)
-        } else {
-            " [HUB]".to_string()
-        }
-    } else {
-        String::new()
-    };
-    // Pick a human-readable name for the dock:
-    // 1. dock_family property (e.g. "Unisynk 8-port USB-C Hub V3")
-    // 2. product name from the device
-    // 3. generic "MultiDock" if we have multiple hubs, else device name
+    // Dock name: family → MultiDock → product name.
     let dock_name = if let Some(family) = dev.properties.get("dock_family") {
         family.clone()
-    } else if total_hubs > 1 {
+    } else if total_hubs > 1 || devs.len() > 1 {
         "MultiDock".to_string()
     } else {
         dev.product
@@ -580,112 +635,109 @@ fn write_dock_node(
     };
     let _ = write!(
         out,
-        "{dock_name}{hub_mark} (Hubs {total_hubs}, Hops {hops}, Tiers {tiers}, Devices {total_devices})",
+        "{dock_name} (Hubs {total_hubs}, Hops {hops}, Tiers {tiers}, Devices {total_devices})",
     );
-    let _ = writeln!(out, " ({:04X}:{:04X})", dev.vendor_id, dev.product_id,);
+    let _ = writeln!(out, " ({:04X}:{:04X})", dev.vendor_id, dev.product_id);
 
-    // Find direct children (internal hubs).
-    let Some(direct_kids) = by_parent.get(&dev.id) else {
-        return;
-    };
+    // Render each grouped device as a sub-node with hierarchical port label.
+    for (i, &device) in devs.iter().enumerate() {
+        let is_last = i + 1 == devs.len();
+        let glyph = if is_last { "└─" } else { "├─" };
+        let sub_prefix = format!("{prefix}{glyph} ");
 
-    // Filter to hub children only — these are the internal hubs.
-    let mut hubs: Vec<&&UsbDevice> = direct_kids
-        .iter()
-        .filter(|k| k.is_hub || k.device_class == skirr_core::UsbClass::Hub)
-        .collect();
-    hubs.sort_by_key(|k| k.port_number.unwrap_or(0));
+        // Port label for this sub-node: P1, P2, etc.
+        let port_label = format!("P{}", i + 1);
 
-    // Non-hub children (compound interfaces, etc.)
-    let non_hubs: Vec<&&UsbDevice> = direct_kids
-        .iter()
-        .filter(|k| !k.is_hub && k.device_class != skirr_core::UsbClass::Hub)
-        .collect();
+        // Write the sub-node header.
+        let _ = write!(out, "{prefix}{glyph} {port_label} ");
+        write_node(out, device);
 
-    // Write each internal hub.
-    for (i, hub) in hubs.iter().enumerate() {
-        let is_last_hub = i + 1 == hubs.len() && non_hubs.is_empty();
-        let glyph = if is_last_hub { "└─" } else { "├─" };
-        let child_prefix = format!("{prefix}{glyph} ");
-
-        // Hub header.
-        let _ = write!(out, "{prefix}{glyph} ");
-        write_node(out, hub);
-
-        // Hub's own children (looked up from by_parent, not direct_kids).
-        let hub_kids: Vec<&&UsbDevice> = by_parent
-            .get(&hub.id)
-            .map(|v| v.iter().collect())
+        // Write all children of this device with hierarchical port labels.
+        let hub_kids: Vec<&UsbDevice> = by_parent
+            .get(&device.id)
+            .map(|v| v.to_vec())
             .unwrap_or_default();
 
-        // Hub's downstream ports.
-        if let Some(info) = &hub.hub_info {
+        if let Some(info) = &device.hub_info {
             if !info.dock_ports.is_empty() {
+                // Hub with known dock_ports layout.
                 let total = info.dock_ports.len();
                 for (j, dp) in info.dock_ports.iter().enumerate() {
-                    let is_last = j + 1 == total;
-                    let port_glyph = if is_last { "└─" } else { "├─" };
-                    let port_prefix = format!("{child_prefix}│ ");
+                    let port_is_last = j + 1 == total;
+                    let port_glyph = if port_is_last { "└─" } else { "├─" };
+                    let port_prefix = format!("{sub_prefix}│ ");
 
                     if let Some(usb_port) = dp.usb_hub_port {
                         if let Some(kid) = hub_kids.iter().find(|c| c.port_number == Some(usb_port))
                         {
-                            let _ = write!(out, "{port_prefix}{port_glyph} ");
+                            let port_num = j + 1;
+                            let child_label = format!("{port_label}-{port_num}");
+                            let _ = write!(out, "{port_prefix}{port_glyph} {child_label} ");
                             write_node(out, kid);
-                            write_chain(out, kid, by_parent, &port_prefix, is_last);
+                            write_chain(
+                                out,
+                                kid,
+                                by_parent,
+                                &port_prefix,
+                                port_is_last,
+                                Some(&child_label),
+                            );
                         } else {
-                            let _ = writeln!(out, "{port_prefix}{port_glyph} {} — n/a", dp.label);
+                            let port_num = j + 1;
+                            let child_label = format!("{port_label}-{port_num}");
+                            let _ = writeln!(out, "{port_prefix}{port_glyph} {child_label} — n/a");
                         }
                     } else {
-                        // Non-USB port (HDMI, Ethernet, etc.)
                         let _ = writeln!(out, "{port_prefix}{port_glyph} {}", dp.label);
                     }
                 }
             } else {
-                // Fallback: expand by port count.
+                // Hub with known port count but no dock_ports.
                 let port_count = info.port_count;
                 for pn in 1..=port_count {
-                    let is_last = pn == port_count;
-                    let port_glyph = if is_last { "└─" } else { "├─" };
-                    let port_prefix = format!("{child_prefix}│ ");
+                    let port_is_last = pn == port_count;
+                    let port_glyph = if port_is_last { "└─" } else { "├─" };
+                    let port_prefix = format!("{sub_prefix}│ ");
+                    let child_label = format!("{port_label}-{pn}");
+
                     if let Some(kid) = hub_kids.iter().find(|c| c.port_number == Some(pn)) {
-                        let _ = write!(out, "{port_prefix}{port_glyph} ");
+                        let _ = write!(out, "{port_prefix}{port_glyph} {child_label} ");
                         write_node(out, kid);
-                        write_chain(out, kid, by_parent, &port_prefix, is_last);
+                        write_chain(
+                            out,
+                            kid,
+                            by_parent,
+                            &port_prefix,
+                            port_is_last,
+                            Some(&child_label),
+                        );
                     } else {
-                        let _ = writeln!(out, "{port_prefix}{port_glyph} free — n/a");
+                        let _ = writeln!(out, "{port_prefix}{port_glyph} {child_label} n/a");
                     }
                 }
             }
         } else if !hub_kids.is_empty() {
-            // Hub without hub_info — render children directly.
+            // Hub without hub_info — just list children with labels.
             for (j, kid) in hub_kids.iter().enumerate() {
-                let is_last = j + 1 == hub_kids.len();
-                let port_glyph = if is_last { "└─" } else { "├─" };
-                let port_prefix = format!("{child_prefix}│ ");
-                let port = kid
+                let port_is_last = j + 1 == hub_kids.len();
+                let port_glyph = if port_is_last { "└─" } else { "├─" };
+                let port_prefix = format!("{sub_prefix}│ ");
+                let child_label = kid
                     .port_number
-                    .map(|p| format!("p{p} "))
-                    .unwrap_or_default();
-                let _ = write!(out, "{port_prefix}{port_glyph} {port}");
+                    .map(|p| format!("{port_label}-{p}"))
+                    .unwrap_or_else(|| port_label.clone());
+                let _ = write!(out, "{port_prefix}{port_glyph} {child_label} ");
                 write_node(out, kid);
-                write_chain(out, kid, by_parent, &port_prefix, is_last);
+                write_chain(
+                    out,
+                    kid,
+                    by_parent,
+                    &port_prefix,
+                    port_is_last,
+                    Some(&child_label),
+                );
             }
         }
-    }
-
-    // Non-hub children (compound interfaces, direct devices, etc.)
-    for (i, kid) in non_hubs.iter().enumerate() {
-        let is_last = i + 1 == non_hubs.len();
-        let glyph = if is_last { "└─" } else { "├─" };
-        let child_prefix = format!("{prefix}{glyph} ");
-        let port = kid
-            .port_number
-            .map(|p| format!("p{p} "))
-            .unwrap_or_default();
-        let _ = write!(out, "{prefix}{glyph} {port}");
-        write_node(out, kid);
-        write_chain(out, kid, by_parent, &child_prefix, is_last);
     }
 }
 
@@ -1062,6 +1114,120 @@ mod tests {
         let kbd = pos("Keyboard");
         let camera = pos("Camera");
         assert!(head < sub && sub < kbd && kbd < camera, "order:\n{tree}");
+    }
+
+    #[test]
+    fn dock_hierarchical_port_labels() {
+        no_color();
+        let mut topo = fixture_topology();
+        let rh_id = topo.root_hubs[0].id;
+
+        // Create USB2.1 Hub on root port 1 with dock_ports.
+        let mut usb2_hub = device(0x0BDA, "USB2.1 Hub", UsbClass::Hub, Some(1));
+        usb2_hub.hub_info = Some(skirr_core::HubInfo {
+            port_count: 4,
+            is_powered: true,
+            power_source: skirr_core::HubPowerSource::SelfPowered,
+            supports_mtt: false,
+            tt_count: 0,
+            tt_type: skirr_core::HubTTType::SingleTT,
+            hub_speed: UsbSpeed::HighSpeed,
+            ports: Vec::new(),
+            dock_ports: vec![
+                skirr_core::DockPort {
+                    index: 1,
+                    port_type: skirr_core::DockPortType::UsbA,
+                    usb_hub_port: Some(1),
+                    connected_device_id: None,
+                    label: "USB-A 1".into(),
+                },
+                skirr_core::DockPort {
+                    index: 2,
+                    port_type: skirr_core::DockPortType::UsbA,
+                    usb_hub_port: Some(2),
+                    connected_device_id: None,
+                    label: "USB-A 2".into(),
+                },
+            ],
+        });
+        usb2_hub.root_hub_id = Some(rh_id);
+
+        // Create USB3.2 Hub on root port 2 with dock_ports.
+        let mut usb3_hub = device(0x0BDA, "USB3.2 Hub", UsbClass::Hub, Some(2));
+        usb3_hub.hub_info = Some(skirr_core::HubInfo {
+            port_count: 4,
+            is_powered: true,
+            power_source: skirr_core::HubPowerSource::SelfPowered,
+            supports_mtt: false,
+            tt_count: 0,
+            tt_type: skirr_core::HubTTType::SingleTT,
+            hub_speed: UsbSpeed::SuperSpeed,
+            ports: Vec::new(),
+            dock_ports: vec![
+                skirr_core::DockPort {
+                    index: 1,
+                    port_type: skirr_core::DockPortType::Ethernet,
+                    usb_hub_port: Some(1),
+                    connected_device_id: None,
+                    label: "Ethernet".into(),
+                },
+                skirr_core::DockPort {
+                    index: 2,
+                    port_type: skirr_core::DockPortType::UsbC,
+                    usb_hub_port: Some(2),
+                    connected_device_id: None,
+                    label: "USB-C 1".into(),
+                },
+            ],
+        });
+        usb3_hub.root_hub_id = Some(rh_id);
+
+        // Create devices connected to the hubs.
+        let mut keyboard = device(0x05AC, "Keyboard", UsbClass::HID, Some(1));
+        keyboard.parent_id = Some(usb2_hub.id);
+        keyboard.tier = 2;
+        keyboard.root_hub_id = Some(rh_id);
+
+        let mut ethernet = device(
+            0x0BDA,
+            "Ethernet Adapter",
+            UsbClass::VendorSpecific,
+            Some(1),
+        );
+        ethernet.parent_id = Some(usb3_hub.id);
+        ethernet.tier = 2;
+        ethernet.root_hub_id = Some(rh_id);
+
+        topo.devices.clear();
+        topo.devices.push(usb2_hub);
+        topo.devices.push(usb3_hub);
+        topo.devices.push(keyboard);
+        topo.devices.push(ethernet);
+
+        let tree = render_tree(&topo);
+
+        // Verify hierarchical port labels.
+        assert!(tree.contains("P1"), "P1 label:\n{tree}");
+        assert!(tree.contains("P2"), "P2 label:\n{tree}");
+        assert!(tree.contains("P1-1"), "P1-1 label:\n{tree}");
+        assert!(tree.contains("P2-1"), "P2-1 label:\n{tree}");
+        assert!(tree.contains("P2-2"), "P2-2 label:\n{tree}");
+
+        // Verify order: P1 (USB2.1 Hub) before P2 (USB3.2 Hub).
+        let p1_pos = tree.lines().position(|l| l.contains("P1 ")).unwrap();
+        let p2_pos = tree.lines().position(|l| l.contains("P2 ")).unwrap();
+        assert!(p1_pos < p2_pos, "P1 before P2:\n{tree}");
+
+        // Verify Keyboard appears under P1-1.
+        let kbd_line = tree.lines().find(|l| l.contains("Keyboard")).unwrap();
+        assert!(kbd_line.contains("P1-1"), "Keyboard under P1-1:\n{tree}");
+
+        // Verify Ethernet Adapter appears under P2-1.
+        let eth_line = tree
+            .lines()
+            .find(|l| l.contains("Ethernet Adapter"))
+            .unwrap();
+        assert!(eth_line.contains("P2-1"), "Ethernet under P2-1:\n{tree}");
     }
 
     #[test]

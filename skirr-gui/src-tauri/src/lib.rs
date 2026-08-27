@@ -366,6 +366,7 @@ fn build_tree_node(
     by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
     displays: &[skirr_core::DisplayInfo],
     bold_ids: &std::collections::HashSet<uuid::Uuid>,
+    port_label: Option<&str>,
 ) -> TreeNode {
     let mut children: Vec<TreeNode> = Vec::new();
 
@@ -373,17 +374,29 @@ fn build_tree_node(
     if let Some(info) = &dev.hub_info {
         if !info.dock_ports.is_empty() {
             let direct_kids = by_parent.get(&Some(dev.id));
-            for dp in &info.dock_ports {
+            for (j, dp) in info.dock_ports.iter().enumerate() {
+                let child_label = port_label.map(|base| format!("{}-{}", base, j + 1));
                 if let Some(usb_port) = dp.usb_hub_port {
                     // USB port — find the connected child device.
                     if let Some(kid) = direct_kids.and_then(|kids| {
                         kids.iter().find(|k| k.port_number == Some(usb_port))
                     }) {
-                        children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                        children.push(build_tree_node(
+                            kid,
+                            by_parent,
+                            by_id,
+                            displays,
+                            bold_ids,
+                            child_label.as_deref(),
+                        ));
                     } else {
                         // Free USB port.
+                        let label = match &child_label {
+                            Some(lbl) => format!("{lbl} — n/a"),
+                            None => format!("{} — n/a", dp.label),
+                        };
                         children.push(TreeNode {
-                            label: format!("{} — n/a", dp.label),
+                            label,
                             meta: None,
                             vid: None,
                             pid: None,
@@ -415,7 +428,14 @@ fn build_tree_node(
             if let Some(kids) = direct_kids {
                 for kid in kids {
                     if kid.port_number.is_none() {
-                        children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                        children.push(build_tree_node(
+                            kid,
+                            by_parent,
+                            by_id,
+                            displays,
+                            bold_ids,
+                            port_label,
+                        ));
                     }
                 }
             }
@@ -424,13 +444,25 @@ fn build_tree_node(
             let port_count = info.port_count;
             let direct_kids = by_parent.get(&Some(dev.id));
             for pn in 1..=port_count {
+                let child_label = port_label.map(|base| format!("{}-{pn}", base));
                 if let Some(kid) = direct_kids.and_then(|kids| {
                     kids.iter().find(|k| k.port_number == Some(pn))
                 }) {
-                    children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                    children.push(build_tree_node(
+                        kid,
+                        by_parent,
+                        by_id,
+                        displays,
+                        bold_ids,
+                        child_label.as_deref(),
+                    ));
                 } else {
+                    let label = match &child_label {
+                        Some(lbl) => format!("{lbl} n/a"),
+                        None => "n/a".to_string(),
+                    };
                     children.push(TreeNode {
-                        label: "n/a".to_string(),
+                        label,
                         meta: None,
                         vid: None,
                         pid: None,
@@ -447,7 +479,14 @@ fn build_tree_node(
             if let Some(kids) = direct_kids {
                 for kid in kids {
                     if kid.port_number.is_none() {
-                        children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                        children.push(build_tree_node(
+                            kid,
+                            by_parent,
+                            by_id,
+                            displays,
+                            bold_ids,
+                            port_label,
+                        ));
                     }
                 }
             }
@@ -458,7 +497,14 @@ fn build_tree_node(
             let mut sorted = kids.clone();
             sorted.sort_by_key(|k| k.port_number.unwrap_or(0));
             for kid in sorted {
-                children.push(build_tree_node(kid, by_parent, by_id, displays, bold_ids));
+                children.push(build_tree_node(
+                    kid,
+                    by_parent,
+                    by_id,
+                    displays,
+                    bold_ids,
+                    port_label,
+                ));
             }
         }
     }
@@ -643,68 +689,185 @@ fn build_topology_view(topo: &SystemTopology) -> TopologyView {
         }
     }
 
-    for (first_port, _group) in &grouped {
-        if let Some(dev) = root_port_map.get(first_port) {
-            // Occupied port — build dock node with internal hubs as children.
-            let mut node = build_tree_node(
-                dev,
-                &by_parent,
-                &by_id,
-                &topo.displays,
-                &bold_ids,
-            );
-            // Compute metrics.
-            fn walk_subtree(
-                dev_id: uuid::Uuid,
-                by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
-                by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
-                worst: &mut (u8, u8),
-                total_hubs: &mut u32,
-                total_devices: &mut u32,
-            ) {
-                if let Some(kids) = by_parent.get(&Some(dev_id)) {
-                    for kid in kids {
-                        *total_devices += 1;
-                        if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub)
-                            && !kid.is_internal
-                        {
-                            *total_hubs += 1;
+    for (first_port, group) in &grouped {
+        // Collect all devices in this group.
+        let grouped_devs: Vec<&UsbDevice> = group
+            .iter()
+            .filter_map(|p| root_port_map.get(p).copied())
+            .collect();
+        let is_actual_dock = grouped_devs.len() > 1
+            || grouped_devs
+                .iter()
+                .any(|d| d.properties.contains_key("dock_family"));
+
+        if let Some(dev) = grouped_devs.first() {
+            if is_actual_dock {
+                // Multi-port dock or dock_family device → use dock format.
+                let mut dock_children: Vec<TreeNode> = Vec::new();
+
+                // Compute metrics across ALL grouped devices (count devices as hubs).
+                fn walk_subtree(
+                    dev_id: uuid::Uuid,
+                    by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
+                    by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
+                    worst: &mut (u8, u8),
+                    total_hubs: &mut u32,
+                    total_devices: &mut u32,
+                ) {
+                    if let Some(kids) = by_parent.get(&Some(dev_id)) {
+                        for kid in kids {
+                            *total_devices += 1;
+                            if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub)
+                                && !kid.is_internal
+                            {
+                                *total_hubs += 1;
+                            }
+                            let (h, _eh, t) = chain_metrics_for(kid.id, by_id);
+                            worst.0 = worst.0.max(h);
+                            worst.1 = worst.1.max(t);
+                            walk_subtree(
+                                kid.id,
+                                by_parent,
+                                by_id,
+                                worst,
+                                total_hubs,
+                                total_devices,
+                            );
                         }
-                        let (h, _eh, t) = chain_metrics_for(kid.id, by_id);
-                        worst.0 = worst.0.max(h);
-                        worst.1 = worst.1.max(t);
-                        walk_subtree(kid.id, by_parent, by_id, worst, total_hubs, total_devices);
                     }
                 }
+                let mut worst = (0u8, 0u8);
+                let mut total_hubs: u32 = 0;
+                let mut total_devices: u32 = 0;
+                for d in &grouped_devs {
+                    total_hubs += 1;
+                    walk_subtree(
+                        d.id,
+                        &by_parent,
+                        &by_id,
+                        &mut worst,
+                        &mut total_hubs,
+                        &mut total_devices,
+                    );
+                }
+                let hops = grouped_devs.iter().map(|d| d.hop_count).max().unwrap_or(0);
+                let tiers = grouped_devs.iter().map(|d| d.tier).max().unwrap_or(0);
+
+                // Dock name: family → MultiDock → product name.
+                let dock_name = if let Some(family) = dev.properties.get("dock_family") {
+                    family.clone()
+                } else if total_hubs > 1 || grouped_devs.len() > 1 {
+                    "MultiDock".to_string()
+                } else {
+                    dev.product
+                        .as_deref()
+                        .or(dev.manufacturer.as_deref())
+                        .unwrap_or("device")
+                        .to_string()
+                };
+
+                // Render each grouped device as a sub-node with hierarchical port label.
+                for (i, &device) in grouped_devs.iter().enumerate() {
+                    let port_label = format!("P{}", i + 1);
+                    let mut sub_node = build_tree_node(
+                        device,
+                        &by_parent,
+                        &by_id,
+                        &topo.displays,
+                        &bold_ids,
+                        Some(&port_label),
+                    );
+                    sub_node.label = format!("Port {port_label} {}", sub_node.label);
+                    dock_children.push(sub_node);
+                }
+
+                let meta = format!(
+                    "Hops {hops} · Hubs {total_hubs} · Tiers {tiers} · {} device{}",
+                    total_devices,
+                    if total_devices == 1 { "" } else { "s" }
+                );
+                port_nodes.push(TreeNode {
+                    label: format!("Port {first_port} ── {dock_name}"),
+                    meta: Some(meta),
+                    vid: Some(dev.vendor_id),
+                    pid: Some(dev.product_id),
+                    speed_mbps: None,
+                    bold: false,
+                    hub_ports: None,
+                    dock_family: dev.properties.get("dock_family").cloned(),
+                    display: None,
+                    children: dock_children,
+                });
+            } else {
+                // Single non-dock device → render directly.
+                let mut node = build_tree_node(
+                    dev,
+                    &by_parent,
+                    &by_id,
+                    &topo.displays,
+                    &bold_ids,
+                    None,
+                );
+                // Compute metrics.
+                fn walk_subtree(
+                    dev_id: uuid::Uuid,
+                    by_parent: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&UsbDevice>>,
+                    by_id: &std::collections::HashMap<uuid::Uuid, &UsbDevice>,
+                    worst: &mut (u8, u8),
+                    total_hubs: &mut u32,
+                    total_devices: &mut u32,
+                ) {
+                    if let Some(kids) = by_parent.get(&Some(dev_id)) {
+                        for kid in kids {
+                            *total_devices += 1;
+                            if (kid.is_hub || kid.device_class == skirr_core::UsbClass::Hub)
+                                && !kid.is_internal
+                            {
+                                *total_hubs += 1;
+                            }
+                            let (h, _eh, t) = chain_metrics_for(kid.id, by_id);
+                            worst.0 = worst.0.max(h);
+                            worst.1 = worst.1.max(t);
+                            walk_subtree(
+                                kid.id,
+                                by_parent,
+                                by_id,
+                                worst,
+                                total_hubs,
+                                total_devices,
+                            );
+                        }
+                    }
+                }
+                let mut worst = (0u8, 0u8);
+                let mut total_hubs: u32 = 0;
+                let mut total_devices: u32 = 0;
+                walk_subtree(
+                    dev.id,
+                    &by_parent,
+                    &by_id,
+                    &mut worst,
+                    &mut total_hubs,
+                    &mut total_devices,
+                );
+                let (dh, _deh, dt) = chain_metrics_for(dev.id, &by_id);
+                worst.0 = worst.0.max(dh);
+                worst.1 = worst.1.max(dt);
+                if (dev.is_hub || dev.device_class == skirr_core::UsbClass::Hub) && !dev.is_internal
+                {
+                    total_hubs += 1;
+                }
+                node.meta = Some(format!(
+                    "Hops {} · Hubs {} · Tiers {} · {} device{}",
+                    worst.0,
+                    total_hubs,
+                    worst.1,
+                    total_devices,
+                    if total_devices == 1 { "" } else { "s" }
+                ));
+                node.label = format!("Port {first_port} ── {}", node.label);
+                port_nodes.push(node);
             }
-            let mut worst = (0u8, 0u8);
-            let mut total_hubs: u32 = 0;
-            let mut total_devices: u32 = 0;
-            walk_subtree(
-                dev.id,
-                &by_parent,
-                &by_id,
-                &mut worst,
-                &mut total_hubs,
-                &mut total_devices,
-            );
-            let (dh, _deh, dt) = chain_metrics_for(dev.id, &by_id);
-            worst.0 = worst.0.max(dh);
-            worst.1 = worst.1.max(dt);
-            if (dev.is_hub || dev.device_class == skirr_core::UsbClass::Hub) && !dev.is_internal
-            {
-                total_hubs += 1;
-            }
-            node.meta = Some(format!(
-                "Hops {} · Hubs {} · Tiers {} · {} device{}",
-                worst.0,
-                total_hubs,
-                worst.1,
-                total_devices,
-                if total_devices == 1 { "" } else { "s" }
-            ));
-            node.label = format!("Port {first_port} ── {}", node.label);
-            port_nodes.push(node);
         } else {
             // Unoccupied port.
             port_nodes.push(TreeNode {
